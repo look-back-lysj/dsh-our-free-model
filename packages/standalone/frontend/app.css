@@ -4348,4 +4348,134 @@ input:disabled, select:disabled, textarea:disabled, .ui-input:disabled {
   clip-path: none !important;
 }
 /* ==== V5 NIGHT · 圆角清零 END ==== */
+/* ==== V5 NIGHT · 深度打磨（14 项修复） ==== */
+
+/* --- 1. KPI 图标容器：圆角清零 + 切角 --- */
+[data-theme="dark"] .ov-metric-icon {
+  border-radius: 0 !important;
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px) !important;
+}
+
+/* --- 2. 侧边栏导航按钮：2px 圆角清零 --- */
+[data-theme="dark"] .console-nav-item {
+  border-radius: 0 !important;
+}
+
+/* --- 3. 模型来源 source-row：圆角清零 + 切角 --- */
+[data-theme="dark"] .source-row,
+[data-theme="dark"] .ov-source-row {
+  border-radius: 0 !important;
+  clip-path: polygon(8px 0, 100% 0, 100% 100%, 0 100%, 0 8px) !important;
+}
+
+/* --- 4. workspace-switch：12px 圆角清零 + 切角 --- */
+[data-theme="dark"] .workspace-switch {
+  border-radius: 0 !important;
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px) !important;
+}
+
+/* --- 5. 全局 ::selection：蓝色泄漏 → 青色 --- */
+[data-theme="dark"] ::selection {
+  background: rgba(0, 208, 192, 0.32) !important;
+  color: #eaf6ff !important;
+}
+
+/* --- 6. 设置页开关：加切角 --- */
+[data-theme="dark"] .settings-toggle {
+  clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px) !important;
+}
+
+/* --- 7. hover 卡片：青色微光从左扫到右 --- */
+@keyframes cp5-sweep-glow {
+  0% { background-position: -200% 0; opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { background-position: 200% 0; opacity: 0; }
+}
+[data-theme="dark"] .ui-card:hover,
+[data-theme="dark"] .ov-metric:hover {
+  position: relative;
+}
+[data-theme="dark"] .ui-card:hover::after,
+[data-theme="dark"] .ov-metric:hover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 30%, rgba(0,208,192,0.07) 45%, rgba(0,208,192,0.13) 50%, rgba(0,208,192,0.07) 55%, transparent 70%);
+  background-size: 200% 100%;
+  animation: cp5-sweep-glow 0.6s ease-out 1 forwards;
+  pointer-events: none;
+  z-index: 1;
+  clip-path: inherit;
+}
+
+/* --- 8. 标题前闪烁方块光标 --- */
+@keyframes cp5-blink-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+[data-theme="dark"] .card-heading h2::before,
+[data-theme="dark"] .usage-panel h2::before {
+  content: "\25AE  ";
+  color: var(--cp-cyan, #00d0c0);
+  animation: cp5-blink-cursor 1.2s steps(1) infinite;
+  font-size: 0.85em;
+}
+
+/* --- 9. 保存/测试成功 glitch 故障动效（更广泛应用） --- */
+[data-theme="dark"] .settings-status-saved,
+[data-theme="dark"] .ui-button.is-success,
+[data-theme="dark"] .badge-success {
+  animation: 0.3s steps(2) 0s 1 normal both running cp-glitch-pop !important;
+  box-shadow: 0 0 16px -5px var(--cp-glow, rgba(0,208,192,0.16)) !important;
+}
+
+/* --- 10. 状态灯呼吸加强 --- */
+@keyframes cp5-pulse-strong {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px 1px var(--cp-cyan, #00d0c0), 0 0 14px 2px rgba(0,208,192,0.3); }
+  50% { opacity: 0.4; box-shadow: 0 0 2px 0px var(--cp-cyan, #00d0c0), 0 0 4px 0px rgba(0,208,192,0.1); }
+}
+[data-theme="dark"] .status-dot {
+  animation: 1.6s steps(1) infinite cp5-pulse-square, 2.4s ease-in-out infinite cp5-pulse-strong !important;
+}
+
+/* --- 11. 侧边栏选中项：改切角形状 --- */
+[data-theme="dark"] .console-nav-item.selected,
+[data-theme="dark"] .console-nav-item[aria-current] {
+  border-radius: 0 !important;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%) !important;
+}
+
+/* --- 12. 全局滚动条：统一暗底青边 --- */
+[data-theme="dark"] *::-webkit-scrollbar-track {
+  background: #070a0e !important;
+}
+[data-theme="dark"] *::-webkit-scrollbar-thumb {
+  background: rgba(0, 208, 192, 0.28) !important;
+  border: 2px solid #070a0e !important;
+  border-radius: 0 !important;
+}
+[data-theme="dark"] *::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 208, 192, 0.48) !important;
+  box-shadow: 0 0 8px rgba(0, 208, 192, 0.3) !important;
+}
+[data-theme="dark"] * {
+  scrollbar-color: rgba(0, 208, 192, 0.28) #070a0e !important;
+}
+
+/* --- 13. 空状态柱条：暗青色扫描线纹理 --- */
+[data-theme="dark"] .dashboard-chart-bar.zero,
+[data-theme="dark"] .usage-day-bar.zero {
+  background: repeating-linear-gradient(0deg, rgba(0,208,192,0.06) 0px, rgba(0,208,192,0.06) 1px, transparent 1px, transparent 4px) !important;
+  border: 1px solid rgba(0, 208, 192, 0.08) !important;
+}
+
+/* --- 14. 失败/警报指标红色补强 --- */
+[data-theme="dark"] .ov-metric[data-accent="danger"] .ov-metric-icon {
+  background: var(--cp-red-soft, rgba(233,69,66,0.15)) !important;
+  color: var(--cp-red, #e94542) !important;
+  box-shadow: rgba(233,69,66,0.25) 0 0 10px -3px !important;
+}
+
+/* ==== V5 NIGHT · 深度打磨 END ==== */
 /* ==== V5 NIGHT END ==== */
