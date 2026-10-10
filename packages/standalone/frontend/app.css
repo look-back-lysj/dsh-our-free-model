@@ -3404,7 +3404,7 @@ input:disabled, select:disabled, textarea:disabled, .ui-input:disabled {
   background: linear-gradient(180deg, #f5ede0 0%, #ddd4c2 100%) !important;
   border-radius: 50% !important;
   box-shadow: 0 1px 3px rgba(86,52,10,0.18), 0 0 0 0.5px rgba(180,83,9,0.12) !important;
-  transition: transform 450ms cubic-bezier(0.34,1.4,0.64,1) !important;
+  transition: transform 450ms cubic-bezier(0.16,1,0.3,1) !important;
   position: relative !important;
 }
 /* 滑块高光点：左上小亮点 */
@@ -4714,4 +4714,299 @@ input:disabled, select:disabled, textarea:disabled, .ui-input:disabled {
   border-radius: 0 !important;
 }
 
-/* ==== V5 NIGHT · 第二轮深度打磨 END ==== *//* ==== V5 NIGHT END ==== */
+/* ==== V5 NIGHT · 第二轮深度打磨 END ==== */
+/* ==== V5 NIGHT · 第三轮深度打磨（颜色丰富/差异化/棱角分明） ==== */
+
+/* ---- 问题一：颜色太单一 ---- */
+
+/* 1. 红色注入：失败/警报元素必须有红色存在感 */
+[data-theme="dark"] .ov-metric[data-accent="danger"] .ov-metric-icon,
+[data-theme="dark"] .ov-failures .ov-failure-row,
+[data-theme="dark"] .model-browser .channel-error,
+[data-theme="dark"] .usage-feedback.is-error {
+  color: var(--cp-red, #e94542) !important;
+}
+
+/* 失败回合 KPI 图标用红色 */
+[data-theme="dark"] .usage-metrics .ov-metric:nth-child(5) .ov-metric-icon {
+  background: rgba(233, 69, 66, 0.12) !important;
+  color: var(--cp-red, #e94542) !important;
+  box-shadow: rgba(233, 69, 66, 0.2) 0 0 10px -3px !important;
+}
+[data-theme="dark"] .usage-metrics .ov-metric:nth-child(5) strong {
+  color: var(--cp-red, #e94542) !important;
+}
+
+/* 已恢复回合 KPI 图标用琥珀色 */
+[data-theme="dark"] .usage-metrics .ov-metric:nth-child(6) .ov-metric-icon {
+  background: rgba(232, 163, 61, 0.12) !important;
+  color: var(--cp-amber, #e8a33d) !important;
+  box-shadow: rgba(232, 163, 61, 0.2) 0 0 10px -3px !important;
+}
+[data-theme="dark"] .usage-metrics .ov-metric:nth-child(6) strong {
+  color: var(--cp-amber, #e8a33d) !important;
+}
+
+/* 输入/输出 Token 用不同颜色区分 */
+[data-theme="dark"] .usage-metrics .ov-metric:nth-child(3) .ov-metric-icon {
+  background: rgba(0, 208, 192, 0.12) !important;
+  color: var(--cp-cyan, #00d0c0) !important;
+}
+[data-theme="dark"] .usage-metrics .ov-metric:nth-child(4) .ov-metric-icon {
+  background: rgba(232, 163, 61, 0.12) !important;
+  color: var(--cp-amber, #e8a33d) !important;
+}
+
+/* 2. 琥珀色注入：警告/注意类元素 */
+[data-theme="dark"] .ui-badge-warning,
+[data-theme="dark"] .badge-warn {
+  background: rgba(232, 163, 61, 0.12) !important;
+  color: var(--cp-amber, #e8a33d) !important;
+  border-color: rgba(232, 163, 61, 0.35) !important;
+}
+
+/* 3. 状态徽章按语义着色：成功=青、警告=琥珀、错误=红、信息=灰 */
+[data-theme="dark"] .ui-badge-success,
+[data-theme="dark"] .badge-success {
+  background: rgba(0, 208, 192, 0.12) !important;
+  color: var(--cp-cyan, #00d0c0) !important;
+  border-color: rgba(0, 208, 192, 0.35) !important;
+}
+[data-theme="dark"] .ui-badge-danger,
+[data-theme="dark"] .badge-danger {
+  background: rgba(233, 69, 66, 0.12) !important;
+  color: var(--cp-red, #e94542) !important;
+  border-color: rgba(233, 69, 66, 0.35) !important;
+}
+
+/* 4. KPI 数字按语义着色：正常=白、异常=红、注意=琥珀 */
+[data-theme="dark"] .ov-metric strong {
+  color: var(--cp-cyan, #00d0c0) !important;
+  text-shadow: 0 0 12px rgba(0, 208, 192, 0.15) !important;
+}
+
+/* ---- 问题二：设计同质化 ---- */
+
+/* 5. 按钮差异化：主按钮=实心青底黑字（扳机），幽灵按钮=透明底青框（瞄具） */
+[data-theme="dark"] .ui-button-default,
+[data-theme="dark"] .primary {
+  background: var(--cp-cyan, #00d0c0) !important;
+  color: #0a0f14 !important;
+  border-color: var(--cp-cyan, #00d0c0) !important;
+  font-weight: 600 !important;
+}
+[data-theme="dark"] .ui-button-default:hover:not(:disabled),
+[data-theme="dark"] .primary:hover:not(:disabled) {
+  background: #2ee8d8 !important;
+  box-shadow: 0 0 16px rgba(0, 208, 192, 0.4), 0 0 40px rgba(0, 208, 192, 0.15) !important;
+  transform: translateY(-1px) !important;
+}
+[data-theme="dark"] .ui-button-default:active:not(:disabled),
+[data-theme="dark"] .primary:active:not(:disabled) {
+  transform: translateY(0) scale(0.98) !important;
+  background: #0bc4b4 !important;
+}
+
+/* 幽灵按钮：透明底 + 青框（和主按钮完全不同的视觉语言） */
+[data-theme="dark"] .ui-button-ghost {
+  background: transparent !important;
+  color: var(--cp-cyan, #00d0c0) !important;
+  border-color: rgba(0, 208, 192, 0.35) !important;
+}
+[data-theme="dark"] .ui-button-ghost:hover:not(:disabled) {
+  background: rgba(0, 208, 192, 0.1) !important;
+  border-color: rgba(0, 208, 192, 0.6) !important;
+  box-shadow: 0 0 10px rgba(0, 208, 192, 0.15) !important;
+}
+
+/* 6. 输入框差异化：深色内嵌底 + 右下单侧切（和按钮的左上切方向不同） */
+[data-theme="dark"] .ui-input,
+[data-theme="dark"] input[type="text"],
+[data-theme="dark"] input[type="number"],
+[data-theme="dark"] input[type="password"],
+[data-theme="dark"] select,
+[data-theme="dark"] textarea {
+  background: rgba(0, 0, 0, 0.3) !important;
+  border: 1px solid rgba(0, 208, 192, 0.2) !important;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%) !important;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3) !important;
+}
+[data-theme="dark"] .ui-input:focus,
+[data-theme="dark"] input:focus,
+[data-theme="dark"] select:focus,
+[data-theme="dark"] textarea:focus {
+  border-color: var(--cp-cyan, #00d0c0) !important;
+  box-shadow: 0 0 12px rgba(0, 208, 192, 0.2), inset 0 1px 3px rgba(0, 0, 0, 0.3) !important;
+  outline: none !important;
+}
+
+/* 7. 徽章差异化：更小的切角（4px）+ 更强的发光（和按钮/输入框区分） */
+[data-theme="dark"] .ui-badge,
+[data-theme="dark"] .count-badge {
+  text-shadow: 0 0 8px currentColor !important;
+  font-weight: 600 !important;
+}
+
+/* 8. 导航选中项差异化：左侧 2px 青色竖线 + 背景渐变 + 文字发光 */
+[data-theme="dark"] .console-nav-item.selected,
+[data-theme="dark"] .console-nav-item[aria-current] {
+  border-left: 2px solid var(--cp-cyan, #00d0c0) !important;
+  background: linear-gradient(90deg, rgba(0, 208, 192, 0.15), rgba(0, 208, 192, 0.05)) !important;
+  color: var(--cp-cyan, #00d0c0) !important;
+  text-shadow: 0 0 8px rgba(0, 208, 192, 0.3) !important;
+}
+
+/* ---- 问题三：棱角不分明 ---- */
+
+/* 9. 卡片边框加强：0.666px → 1px + 不透明度提升 */
+[data-theme="dark"] .ui-card,
+[data-theme="dark"] .ov-metric,
+[data-theme="dark"] .usage-panel {
+  border: 1px solid rgba(0, 208, 192, 0.25) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 20px -8px rgba(0, 208, 192, 0.1) !important;
+}
+
+/* 10. 四角 L 型刻度线：用伪元素画真正的四角刻度 */
+[data-theme="dark"] .ui-card::after,
+[data-theme="dark"] .ov-metric::after {
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 !important;
+  pointer-events: none !important;
+  background:
+    /* 左上角 L */
+    linear-gradient(to right, var(--cp-cyan, #00d0c0) 12px, transparent 12px) top left / 12px 1px,
+    linear-gradient(to bottom, var(--cp-cyan, #00d0c0) 12px, transparent 12px) top left / 1px 12px,
+    /* 右上角 L */
+    linear-gradient(to left, var(--cp-cyan, #00d0c0) 12px, transparent 12px) top right / 12px 1px,
+    linear-gradient(to bottom, var(--cp-cyan, #00d0c0) 12px, transparent 12px) top right / 1px 12px,
+    /* 右下角 L */
+    linear-gradient(to left, var(--cp-cyan, #00d0c0) 12px, transparent 12px) bottom right / 12px 1px,
+    linear-gradient(to top, var(--cp-cyan, #00d0c0) 12px, transparent 12px) bottom right / 1px 12px,
+    /* 左下角 L */
+    linear-gradient(to right, var(--cp-cyan, #00d0c0) 12px, transparent 12px) bottom left / 12px 1px,
+    linear-gradient(to top, var(--cp-cyan, #00d0c0) 12px, transparent 12px) bottom left / 1px 12px !important;
+  background-repeat: no-repeat !important;
+  opacity: 0.5 !important;
+  z-index: 1 !important;
+  clip-path: inherit !important;
+}
+
+/* 11. 按钮边框加强：0.666px → 1px */
+[data-theme="dark"] .ui-button {
+  border-width: 1px !important;
+}
+
+/* 12. 设置页开关加强：更明显的视觉边界 */
+[data-theme="dark"] .settings-toggle {
+  border: 1px solid rgba(0, 208, 192, 0.4) !important;
+  box-shadow: 0 0 8px rgba(0, 208, 192, 0.15), inset 0 0 4px rgba(0, 208, 192, 0.1) !important;
+}
+
+/* 13. 输入框边框加强：0.666px → 1px + 不透明度提升 */
+[data-theme="dark"] .ui-input,
+[data-theme="dark"] input[type="text"],
+[data-theme="dark"] input[type="number"],
+[data-theme="dark"] input[type="password"],
+[data-theme="dark"] select,
+[data-theme="dark"] textarea {
+  border-width: 1px !important;
+  border-color: rgba(0, 208, 192, 0.25) !important;
+}
+
+/* 14. 徽章边框加强：不透明度提升 */
+[data-theme="dark"] .ui-badge,
+[data-theme="dark"] .count-badge {
+  border-width: 1px !important;
+  border-color: rgba(0, 208, 192, 0.45) !important;
+}
+
+/* 15. 空状态图表面板加强：边框更明显 */
+[data-theme="dark"] .chart-empty,
+[data-theme="dark"] .ov-chart-empty {
+  border: 1px solid rgba(0, 208, 192, 0.3) !important;
+  box-shadow: inset 0 0 30px -10px rgba(0, 208, 192, 0.15) !important;
+}
+
+/* 16. 侧边栏底部信息卡边框加强 */
+[data-theme="dark"] .sidebar-support {
+  border: 1px solid rgba(0, 208, 192, 0.15) !important;
+}
+
+/* 17. workspace-switch 边框加强 */
+[data-theme="dark"] .workspace-switch {
+  border: 1px solid rgba(0, 208, 192, 0.2) !important;
+}
+
+/* ==== V5 NIGHT · 第三轮深度打磨 END ==== *//* ==== V5 NIGHT END ==== */
+
+/* ==========================================================================
+   ==== V5 DAY · 流光岁月打磨（只动白昼，黑夜一律不碰） =====================
+   依据 impeccable craft-floor：
+   ① kicker 去"装扮感"——缩短字距、弱化前置短线（保留标签本身做导航）；
+   ② 彩色表面次级字改暖调，不再用中性灰（对标 Claude #6c6a64）；
+   ③ 状态徽章分色——成功/警告/危险/信息分色相，别全一个橙；
+   ④ 缓动已在上方 :root 换成指数 ease-out（回弹过时）。
+   ========================================================================== */
+
+/* ① kicker：缩短字距、弱化前置短线，去"等宽仪表盘"味 */
+:root:not([data-theme="dark"]) .heading-eyebrow,
+:root:not([data-theme="dark"]) .eyebrow {
+  letter-spacing: 0.07em !important;
+  color: #8a8175 !important;            /* 暖调 tertiary，不再偏灰 */
+}
+:root:not([data-theme="dark"]) .heading-eyebrow::before,
+:root:not([data-theme="dark"]) .eyebrow::before {
+  width: 10px !important;
+  background: #b49a6a !important;       /* 黄铜短线，贴纸张语言 */
+  opacity: 0.6 !important;
+}
+
+/* ② 彩色表面次级字暖调：徽章、计数、表格次级信息不再用中性灰 */
+:root:not([data-theme="dark"]) .ui-badge {
+  color: #6c6a64 !important;            /* 暖灰，贴奶白画布 */
+  background: #f3efe7 !important;
+}
+:root:not([data-theme="dark"]) .dashboard-metric > div,
+:root:not([data-theme="dark"]) .console-breadcrumb,
+:root:not([data-theme="dark"]) .console-topbar-status,
+:root:not([data-theme="dark"]) .workspace-switch small {
+  color: #7d7668 !important;            /* 次级信息统一暖调 */
+}
+
+/* ③ 状态徽章分色：成功=绿 / 警告=琥珀 / 危险=红 / 信息=黄铜，别全一个橙 */
+:root:not([data-theme="dark"]) .ui-badge-success { background: #eff7f2 !important; color: #177552 !important; border-color: #cfe6da !important; }
+:root:not([data-theme="dark"]) .ui-badge-warning { background: #fbf6ea !important; color: #8a6215 !important; border-color: #e9ddc0 !important; }
+:root:not([data-theme="dark"]) .ui-badge-danger,
+:root:not([data-theme="dark"]) .ui-badge-error   { background: #fdf5f5 !important; color: #9c3343 !important; border-color: #f0d5d5 !important; }
+:root:not([data-theme="dark"]) .ui-badge-blue,
+:root:not([data-theme="dark"]) .ui-badge-info    { background: #f3efe7 !important; color: #8a4b06 !important; border-color: #eedfc6 !important; }
+/* ==== V5 DAY · 流光岁月打磨 END ==== */
+/* ---- V5 DAY 补：侧边栏选中态 & 黄铜按钮（收现代 SaaS 味，贴纸张/黄铜） ---- */
+/* ⑥ 侧边栏选中：圆角收敛 + 左侧一道黄铜细线（页签折角感），不再是大圆角块 */
+:root:not([data-theme="dark"]) .console-nav-item { border-radius: 5px !important; }
+:root:not([data-theme="dark"]) .console-nav-item.selected {
+  border-radius: 5px !important;
+  background: linear-gradient(90deg, rgba(180,83,9,0.10), rgba(180,83,9,0.02)) !important;
+  box-shadow: inset 2px 0 0 #b45309, inset 0 0 0 1px rgba(180,83,9,0.10) !important;
+  color: #8a4b06 !important;
+}
+
+/* ⑦ 黄铜主键：压哑光、减甜度——细刻边 + 几乎无大软阴影，像黄铜铭牌 */
+:root:not([data-theme="dark"]) .ui-button-default,
+:root:not([data-theme="dark"]) .primary {
+  background: linear-gradient(180deg, #b57309, #9a5c06) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), inset 0 -1px 0 rgba(0,0,0,0.12), 0 1px 2px rgba(86,52,10,0.14) !important;
+  border: 1px solid #8a4b06 !important;
+}
+:root:not([data-theme="dark"]) .ui-button-default:hover,
+:root:not([data-theme="dark"]) .primary:hover {
+  background: linear-gradient(180deg, #c07f0c, #a36307) !important;
+  transform: translateY(-1px) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.28), inset 0 -1px 0 rgba(0,0,0,0.10), 0 3px 8px -3px rgba(86,52,10,0.22) !important;
+}
+:root:not([data-theme="dark"]) .ui-button-default:active,
+:root:not([data-theme="dark"]) .primary:active {
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.18) !important;
+}
+/* ==== V5 DAY 补 END ==== */
