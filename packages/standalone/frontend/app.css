@@ -4938,7 +4938,41 @@ input:disabled, select:disabled, textarea:disabled, .ui-input:disabled {
   border: 1px solid rgba(0, 208, 192, 0.2) !important;
 }
 
-/* ==== V5 NIGHT · 第三轮深度打磨 END ==== *//* ==== V5 NIGHT END ==== */
+/* ==== V5 NIGHT · 第三轮深度打磨 END ==== */
+/* ==== V5 NIGHT · 第四轮深度打磨（EAC 协付渠道 + 登录页残留） ==== */
+
+/* 1. EAC 状态徽章（ofm_pill）：999px 药丸 → 切角 4px */
+[data-theme="dark"] .ofm_pill {
+  border-radius: 0 !important;
+  clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px) !important;
+}
+
+/* 2. EAC 状态点（ofm_dot）：50% 圆形 → 方形 */
+[data-theme="dark"] .ofm_dot {
+  border-radius: 0 !important;
+  width: 5px !important;
+  height: 5px !important;
+}
+
+/* 3. EAC "点个 Star" 按钮（ofm_starbtn）：7px 圆角 → 切角 8px */
+[data-theme="dark"] .ofm_starbtn {
+  border-radius: 0 !important;
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px) !important;
+}
+
+/* 4. EAC 信息卡（ofm_hero）：12px/20px 圆角 → 对角切 18px */
+[data-theme="dark"] .ofm_hero {
+  border-radius: 0 !important;
+  clip-path: polygon(18px 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%, 0 18px) !important;
+}
+
+/* 5. 登录页代码块（code）：6px 圆角 → 切角 4px */
+[data-theme="dark"] code {
+  border-radius: 0 !important;
+  clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px) !important;
+}
+
+/* ==== V5 NIGHT · 第四轮深度打磨 END ==== *//* ==== V5 NIGHT END ==== */
 
 /* ==========================================================================
    ==== V5 DAY · 流光岁月打磨（只动白昼，黑夜一律不碰） =====================
@@ -5010,3 +5044,91 @@ input:disabled, select:disabled, textarea:disabled, .ui-input:disabled {
   box-shadow: inset 0 2px 4px rgba(0,0,0,0.18) !important;
 }
 /* ==== V5 DAY 补 END ==== */
+/* ==========================================================================
+   ==== V5 DAY · 错位与不合理修复（只动白昼） =============================
+   ========================================================================== */
+
+/* ① 个人工作空间卡片：文字容器允许收缩换行，别被徽章挤成竖排 */
+:root:not([data-theme="dark"]) .workspace-switch > span:not(.workspace-avatar) {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+:root:not([data-theme="dark"]) .workspace-switch > span:not(.workspace-avatar) small {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+:root:not([data-theme="dark"]) .workspace-switch > .ui-badge {
+  flex-shrink: 0 !important;   /* 徽章不挤压文字 */
+  margin-left: 0 !important;
+}
+:root:not([data-theme="dark"]) .workspace-switch { flex-wrap: nowrap !important; }
+/* ==== 修复① END ==== */
+/* ③ 能力标签与状态标签语义分层：能力=黄铜描边中性 / 状态=按语义分色 */
+/* 能力标签（纯文本/思考/视觉 = ui-badge-neutral）：黄铜描边，贴"仪器铭牌" */
+:root:not([data-theme="dark"]) .ui-badge-neutral {
+  background: #f6f2ea !important;
+  color: #6b6157 !important;
+  border: 1px solid #e2d9c8 !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.5) !important;
+}
+/* 状态-警告（不可用/地区受限 = ui-badge-warning）：琥珀 */
+:root:not([data-theme="dark"]) .ui-badge-warning {
+  background: #fbf3e4 !important;
+  color: #9a5c06 !important;
+  border: 1px solid #ecd9b8 !important;
+}
+/* 状态-成功（已探测可用/可用）：绿 */
+:root:not([data-theme="dark"]) .ui-badge-success {
+  background: #edf6f0 !important;
+  color: #1a7a52 !important;
+  border: 1px solid #cfe5d8 !important;
+}
+/* ==== 修复③ END ==== */
+/* ② 测试按钮可点/不可点状态分层：禁用的明显"灰掉+去掉黄铜" */
+:root:not([data-theme="dark"]) .model-browser button:disabled,
+:root:not([data-theme="dark"]) .models-browser button:disabled,
+:root:not([data-theme="dark"]) .ui-button:disabled,
+:root:not([data-theme="dark"]) button[data-testid*="test"]:disabled {
+  opacity: 0.5 !important;
+  background: #efece6 !important;
+  color: #a39b8c !important;
+  border-color: #e2dccd !important;
+  box-shadow: none !important;
+  cursor: not-allowed !important;
+}
+/* ④ 图表区空态：加极淡的黄铜坐标网格，让"没数据"也有仪器感，不再一片死白 */
+:root:not([data-theme="dark"]) .usage-chart-area,
+:root:not([data-theme="dark"]) .chart-area,
+:root:not([data-theme="dark"]) .dashboard-chart {
+  background-image:
+    linear-gradient(to right, rgba(138,75,6,0.05) 1px, transparent 1px),
+    linear-gradient(to top, rgba(138,75,6,0.06) 1px, transparent 1px) !important;
+  background-size: 48px 32px, 100% 32px !important;
+}
+/* ⑤ "0 Token"下那条断掉的虚线：藏掉意图不明的装饰 */
+:root:not([data-theme="dark"]) .usage-total-line,
+:root:not([data-theme="dark"]) .chart-total-line { display: none !important; }
+/* ==== 修复②④⑤ END ==== */
+/* ⑥ 渠道页搜索框：给图标让位，不再压字 */
+:root:not([data-theme="dark"]) .channel-search input,
+:root:not([data-theme="dark"]) input[placeholder*="搜索渠道"],
+:root:not([data-theme="dark"]) input[placeholder*="搜索模型"] {
+  padding-left: 34px !important;
+}
+
+/* ⑧ API 接入页代码块：纯黑 → 深棕墨，贴合暖纸基调 */
+:root:not([data-theme="dark"]) .quick-start pre,
+:root:not([data-theme="dark"]) .code-block,
+:root:not([data-theme="dark"]) pre,
+:root:not([data-theme="dark"]) .connection-code,
+:root:not([data-theme="dark"]) .quick-start-code {
+  background: #2b2118 !important;          /* 深棕墨，不是纯黑 */
+  color: #f2e9da !important;
+  border: 1px solid #4a3a2a !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04) !important;
+}
+:root:not([data-theme="dark"]) pre code,
+:root:not([data-theme="dark"]) .quick-start code { color: #f2e9da !important; background: transparent !important; }
+/* ==== 修复⑥⑧ END ==== */
