@@ -5132,3 +5132,73 @@ input:disabled, select:disabled, textarea:disabled, .ui-input:disabled {
 :root:not([data-theme="dark"]) pre code,
 :root:not([data-theme="dark"]) .quick-start code { color: #f2e9da !important; background: transparent !important; }
 /* ==== 修复⑥⑧ END ==== */
+/* ④⑤ 用量图表区精修（真实类名）：0 数据也有仪器刻度感，虚线改实线 */
+/* "0 Token"下那条点状虚线：去掉，改成干净排版 */
+:root:not([data-theme="dark"]) .usage-window-total {
+  border-bottom: none !important;
+  text-decoration: none !important;
+}
+:root:not([data-theme="dark"]) .usage-window-total strong,
+:root:not([data-theme="dark"]) .usage-window-total b { text-decoration: none !important; border: 0 !important; }
+/* 图表区：加淡黄铜坐标网格，0 柱子轨道做出"刻度槽"感 */
+:root:not([data-theme="dark"]) .usage-trend-chart {
+  background-image:
+    linear-gradient(to top, rgba(138,75,6,0.07) 1px, transparent 1px) !important;
+  background-size: 100% 25% !important;
+  border-bottom: 1px solid #e6ddcc !important;
+}
+/* 0 数据柱子的轨道：淡黄铜刻度槽，看得见但克制 */
+:root:not([data-theme="dark"]) .usage-day-track {
+  background: linear-gradient(180deg, rgba(138,75,6,0.045), rgba(138,75,6,0.02)) !important;
+  border: 1px solid rgba(138,75,6,0.08) !important;
+  border-radius: 3px !important;
+}
+:root:not([data-theme="dark"]) .usage-day-bar.zero { background: rgba(138,75,6,0.10) !important; min-height: 3px !important; border-radius: 2px !important; }
+/* ==== 修复④⑤ END ==== */
+/* ⑦ 页面内容少时撑满视口：页脚自然落底，不再浮在中间 */
+:root:not([data-theme="dark"]) .app-shell main {
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 100vh !important;
+}
+:root:not([data-theme="dark"]) .app-shell main > section.page {
+  flex: 1 0 auto !important;
+}
+:root:not([data-theme="dark"]) .app-shell main > footer {
+  flex-shrink: 0 !important;
+  margin-top: auto !important;
+}
+/* ==== 修复⑦ END ==== */
+/* ① 修正：徽章固定不伸展，文字容器独占剩余空间并允许省略 */
+:root:not([data-theme="dark"]) .workspace-switch { display: flex !important; align-items: center !important; }
+:root:not([data-theme="dark"]) .workspace-switch > .workspace-avatar { flex: 0 0 auto !important; }
+:root:not([data-theme="dark"]) .workspace-switch > span:not(.workspace-avatar):not(.ui-badge) {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+:root:not([data-theme="dark"]) .workspace-switch > span:not(.workspace-avatar):not(.ui-badge) > small {
+  display: block !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+:root:not([data-theme="dark"]) .workspace-switch > .ui-badge {
+  flex: 0 0 auto !important;
+  margin-left: auto !important;
+}
+/* ==== 修复① 修正 END ==== */
+/* ① 补强：标题"个人工作空间"不竖排断行（核心），整体省略 */
+:root:not([data-theme="dark"]) .workspace-switch > span:not(.workspace-avatar):not(.ui-badge) {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+/* ==== 修复① 补强 END ==== */
+/* ⑤ 修正：去掉大 0 下面那条琥珀点状虚线（::after 伪元素画的） */
+:root:not([data-theme="dark"]) [data-testid="usage-window-total"]::after,
+:root:not([data-theme="dark"]) .usage-window-total strong::after {
+  display: none !important;
+  content: none !important;
+  background: none !important;
+}
+/* ==== 修复⑤ 修正 END ==== */
