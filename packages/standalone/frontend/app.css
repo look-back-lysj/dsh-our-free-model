@@ -5202,3 +5202,25 @@ input:disabled, select:disabled, textarea:disabled, .ui-input:disabled {
   background: none !important;
 }
 /* ==== 修复⑤ 修正 END ==== */
+/* ==== 夜主题·工作空间卡片修复 ==== */
+/* 赛博终端：文字不竖排，徽章不挤压，省略号截断 */
+[data-theme="dark"] .workspace-switch { display: flex !important; align-items: center !important; }
+[data-theme="dark"] .workspace-switch > .workspace-avatar { flex: 0 0 auto !important; }
+[data-theme="dark"] .workspace-switch > span:not(.workspace-avatar):not(.ui-badge) {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+[data-theme="dark"] .workspace-switch > span:not(.workspace-avatar):not(.ui-badge) > small {
+  display: block !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+[data-theme="dark"] .workspace-switch > .ui-badge {
+  flex: 0 0 auto !important;
+  margin-left: auto !important;
+}
+/* ==== 夜主题·工作空间卡片修复 END ==== */
