@@ -117,7 +117,8 @@ try {
     assert.ok(!body.includes(key))
     const manifest = JSON.parse(fs.readFileSync(new URL('../packages/standalone/web/assets.json', import.meta.url), 'utf8'))
     assert.ok(manifest.includes('app.js') && manifest.includes('app.css'))
-    assert.ok(manifest.some(name => /^channels-.+\.js$/.test(name)))
+    assert.ok(manifest.some(name => /^eac-.+\.js$/.test(name)))
+    assert.ok(!manifest.some(name => /^channels-.+\.js$/.test(name)))
     for (const asset of manifest) {
       const response = await request(`/assets/${asset}`, { cookie: '' })
       assert.equal(response.status, 200, asset)

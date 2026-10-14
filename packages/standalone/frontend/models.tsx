@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual'
 import { Boxes, Check, CircleAlert, CircleCheck, Copy, LoaderCircle, Play, RefreshCw, Search, SlidersHorizontal, Square, X } from 'lucide-react'
-import { providers } from 'ofm-provider-list'
 import { Badge, Button, Input } from './components/ui'
 import { filterModels } from './models-data.mjs'
 import type { Host, Model, ModelTestResult, Summary } from './types'
@@ -12,8 +11,7 @@ const availabilityNames: Record<string, string> = {
   unavailable: '不可用', throttled: '限流中', 'region-blocked': '地区受限',
 }
 const sourceNames: Record<string, string> = { anonymous: '匿名模型', kilo: 'Kilo 免费池', eac: 'EAC 协付' }
-const channelName = (id: string) => sourceNames[id]
-  ?? providers.find(provider => provider.id === id)?.name ?? id
+const channelName = (id: string) => sourceNames[id] ?? id
 const number = (value: number) => new Intl.NumberFormat('zh-CN').format(value)
 const capacity = (value?: number) => value && Number.isFinite(value) && value > 0
   ? value >= 1000 ? `${Number((value / 1000).toFixed(1))}K` : number(value) : '未知'

@@ -1,7 +1,7 @@
 # Our Free Model 独立本地服务
 
 这是独立产品的源码入口，不需要 DSH、Cordis、DSH profile 或宿主凭据库。
-已提供独立 HTTP 服务、网页管理、EAC 和原有十三个账号渠道；独立安装制品尚未发布。
+已提供独立 HTTP 服务、网页管理、EAC 和可选账号连接扩展宿主。核心不再包含原十三项账号实现；该能力由用户单独导入并启用扩展提供。正式扩展尚未发布，本分支交付可信本地开发包。
 本阶段从完整仓库运行，暂不能仅复制本目录或将它单独作为 npm 包安装。
 
 ## 启动
@@ -28,10 +28,9 @@ npm run start:standalone -- --port 18900 --data-dir F:\ofm-data
 
 - 默认目录：`~/.our-free-model`；环境变量 `OFM_HOME` 或 `--data-dir` 可以覆盖。
 - 不读取 `DSH_HOME`，不导入 DSH 的配置或凭据。
-- 账号凭据保存在 `channel-credentials.json`，账号池、积分与账本位于 `channel-pack/`；
-  EAC 授权保存在 `eac-user.json`，均属于当前独立数据目录。
-- 首次启动不会自动搬迁插件账号。需要迁移时，在插件中导出账号备份，再在独立网页的
-  “免费账号渠道 → 供应商与备份”手动导入。备份包含明文凭据，请妥善保存。
+- EAC 授权保存在 eac-user.json，核心设置与 API Key 不交给扩展。
+- 扩展代码保存在 extensions/ofm.account-connectors，扩展账号数据保存在 extensions-data/ofm.account-connectors。安装不启用，首次启用也不自动接管旧账号。原 channel-pack/ 与 channel-credentials.json 留在原处，核心不读取。
+- 迁移在扩展自身“备份与迁移”里先预览再确认；新账号和渠道保持停用。卸载默认保留扩展数据。
 - API Key 为此产品单独生成，保存在该目录的 `settings.json` 的 `forwardKey` 字段。
 - `GET /health` 提供不含凭据的产品状态；推理接口与模型清单需要 `Authorization: Bearer <API Key>`。
 - 同一个数据目录只能启动一个本地服务实例。正常退出会清除 `service.lock`。
@@ -48,9 +47,7 @@ npm run start:standalone -- --port 18900 --data-dir F:\ofm-data
 - `POST /v1/responses`，包括流式与非流式请求
 - 匿名免费模型与 Kilo 免费模型
 - EAC 原 GitHub 授权、签名请求和资源池；独立应用使用自己的授权文件
-- CodeArts、CodeBuddy（页面显示 WorkBuddy 国内版）、WorkBuddy 国际版、LobsterAI、
-  Qoder、Qoder 中国版、TRAE、Cline、Loomy、Raccoon、MiniMax Code、ZCode、Gemini
-- 原渠道登录、账号池和轮换、续期、模型开关、每日签到、积分锁定、账本及备份
+- 可选独立账号连接扩展：十三项渠道及其登录、账号池、续期、模型开关、签到、账本和备份；这些实现不在核心包内
 - 本地模型缓存、用量统计、周期刷新、请求取消与退出清理
 - `GET /`：独立中文网页控制台
 - `/api/management/*`：同源管理接口，使用管理会话或 API Key 鉴权
@@ -58,12 +55,10 @@ npm run start:standalone -- --port 18900 --data-dir F:\ofm-data
 启动先绑定监听器，再异步刷新模型清单。首次运行默认不发可用性探测请求；
 `--probe` 可启用并保存自动探测设置，以后启动沿用，可在网页设置中关闭。
 上游不可达时保留缓存；`--no-refresh` 跳过核心的启动刷新与周期任务，
-手动刷新、探测和推理仍可用。账号渠道初始化目录、登录轮询、续期和自动签到沿用渠道自身规则；
-`--no-refresh` 不会关闭这些任务，自动签到可在渠道页面关闭。
+手动刷新、探测和推理仍可用。未安装或停用扩展时，没有账号渠道任务。扩展启用后的后台续期、签到由用户在扩展中分别设置；核心 --no-refresh 只控制核心刷新。
 自动探测遇到限流遵守核心退避；页面主动探测会强制重新检查，并产生推理请求。
 
-独立账号渠道采用每实例 Worker 隔离，通过同一个服务端口和 API Key 提供
-`provider/model` 模型 ID。启动先挂载 HTTP，账号清单在后台加载，不等待所有供应商网络响应。
+明确启用的外置账号扩展采用每实例 Worker 管理生命周期，通过同一个服务端口和 API Key 提供 provider/model 模型 ID；Worker 不是安全沙箱。未启用渠道或没有账号时，静态模型不会被当作可调用模型。
 EAC 在独立页面自行授权；不会使用 DSH 的 EAC token。原插件的宿主判定保持原样。
 插件热重载、自更新和宿主 Agent 自动续跑不挂载在独立入口。
 
@@ -164,9 +159,9 @@ npm run test:contributor
 
 ```powershell
 npm ci --prefix packages/standalone --ignore-scripts
-npm run build:standalone-channels
+node scripts/account-connectors-host-test.mjs
 npm run build:standalone-ui
-node scripts/build-standalone-channels.mjs --check
+node scripts/core-extension-boundary-test.mjs
 node scripts/build-standalone-ui.mjs --check
 ```
 

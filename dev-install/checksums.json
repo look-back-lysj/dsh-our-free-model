@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-14",
+  "development": true,
+  "officialReleaseSigned": false,
+  "coreBase": "226a9ecab25fa3d7afa8ab73bcba6db7cdb82dc4",
+  "files": [
+    {
+      "repository": "look-back-lysj/dsh-our-free-model",
+      "file": "dsh-our-free-model-2.1.0.tgz",
+      "bytes": 410969,
+      "sha256": "b67612993271c913b9003829c916f149c54407917403857a1029910316daba05"
+    },
+    {
+      "repository": "look-back-lysj/dsh-ofm-account-connectors",
+      "file": "dsh-ofm-account-connectors-0.1.0.tgz",
+      "bytes": 1198050,
+      "sha256": "087e9e16be959218347334cea22e7e47ec3d02be55cf9307aef414f0874e1e64"
+    },
+    {
+      "repository": "look-back-lysj/dsh-ofm-account-connectors",
+      "file": "account-connectors-0.1.0-dev.zip",
+      "bytes": 1221384,
+      "sha256": "462369d6ea35f5c669fe7b9bcd1246f3e168d34779e53160f7a189128aecdd0e"
+    },
+    {
+      "repository": "draft-attachment",
+      "file": "OFM-core-account-extension-dev-0.1.0-x64-setup.exe",
+      "bytes": 27636999,
+      "sha256": "a5a16f4f4ad925dae758bf78fda8a03e14d7517f7680a28932a2a1b27245fef3"
+    }
+  ]
+}

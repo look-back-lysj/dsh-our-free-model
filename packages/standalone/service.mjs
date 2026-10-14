@@ -6,7 +6,8 @@ import { generateKey, startForwardServer } from '../../src/forward.js'
 import { isLoopbackHost } from '../../src/trust.js'
 import { createManagement } from './management.mjs'
 import { createStandaloneEac } from './eac.mjs'
-import { createChannelRuntime } from './channels/runtime.mjs'
+import { createAccountConnectorsHost, combineCoreWithAccountConnectors } from '../../src/extensions/account-connectors.js'
+import { unavailableAccountConnectors } from './extensions.mjs'
 
 const PRODUCT = 'our-free-model-standalone'
 const VERSION = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
@@ -20,6 +21,7 @@ export function resolveStandaloneDataDir(env = process.env, home = os.homedir())
 export async function startStandalone({
   dataDir = resolveStandaloneDataDir(), host = '127.0.0.1', port,
   logger = console, refresh = true, probe,
+  accountConnectorsFactory = createAccountConnectorsHost, eacFactory = createStandaloneEac,
 } = {}) {
   if (!isLoopbackHost(host)) throw new TypeError('the standalone service binds a loopback address only')
   if (typeof dataDir !== 'string' || !path.isAbsolute(dataDir)) throw new TypeError('dataDir must be an absolute path')
@@ -33,7 +35,8 @@ export async function startStandalone({
   let runtime
   let listener
   let management
-  let channels
+  let accountConnectors
+  let coreRuntime
   let eac
   let timer
   let refreshInFlight
@@ -54,37 +57,33 @@ export async function startStandalone({
     settings.update({ forwardKey: key, ...probe === undefined ? {} : { standaloneProbe: probe === true } })
     settings.flush()
     if (settings.writeFailed) throw new Error('could not persist the standalone API key')
-    eac = createStandaloneEac({
+    eac = eacFactory({
       dataDir,
       onSaved: () => { void runtime?.refreshSealedLane().catch(error => logger.warn?.(`EAC 清单刷新失败：${error.message}`)) },
     })
-    runtime = createModelRuntime({
+    coreRuntime = createModelRuntime({
       ...stores, logger, attributionUserAgent: `${PRODUCT}/${VERSION}`,
       sealedCredential: eac.credential,
     })
-    channels = await createChannelRuntime({ dataDir, logger, stats: stores.stats })
-    const core = runtime
-    runtime = {
-      ...core,
-      get egress() { return core.egress },
-      get gatewayLatency() { return core.gatewayLatency },
-      get catalog() { return [...core.catalog, ...channels.publicModelRows().map(row => ({ ...row, contextWindow: row.context_window, maxOutput: row.max_tokens }))] },
-      state: () => ({ ...core.state(), catalog: [...core.catalog, ...channels.publicModelRows()] }),
-      publicModelRows: () => [...core.publicModelRows(), ...channels.publicModelRows()],
-      complete: (request, onChunk) => channels.handles(request.model) ? channels.complete(request, onChunk) : core.complete(request, onChunk),
-      async refreshCatalog(options) {
-        if (stopped) return
-        await Promise.all([core.refreshCatalog(options), channels.refresh().catch(error => { if (!stopped) throw error })])
-      },
+    try {
+      accountConnectors = await accountConnectorsFactory({ dataDir, logger, stats: stores.stats })
+    } catch (error) {
+      logger.warn?.('账号连接扩展初始化失败；核心服务继续运行')
+      accountConnectors = unavailableAccountConnectors(error)
     }
+    runtime = combineCoreWithAccountConnectors(coreRuntime, accountConnectors)
+    const capabilities = () => ({
+      anonymous: true, kilo: true, eac: true, webUi: true, accountConnectors: true,
+      accountChannels: accountConnectors.state().state === 'ready',
+    })
     management = createManagement({
-      stores, runtime, channels, eac,
+      stores, runtime, accountConnectors, eac,
       info: () => ({
         product: PRODUCT, version: VERSION, dataDir,
         baseUrl: `http://${host === '::1' ? '[::1]' : host}:${listener?.port ?? requestedPort}`,
         automaticRefresh: refresh,
         networkMode: process.env.OFM_TEST_UPSTREAM ? 'fixture' : 'live',
-        capabilities: { anonymous: true, kilo: true, eac: true, accountChannels: true, webUi: true },
+        capabilities: capabilities(),
       }),
       onSettingsChanged: () => { if (!refreshInFlight) scheduleRefresh() },
     })
@@ -94,7 +93,7 @@ export async function startStandalone({
       modelRows: runtime.publicModelRows,
       health: () => ({
         ok: true, service: PRODUCT, product: 'standalone', version: VERSION,
-        capabilities: { anonymous: true, kilo: true, eac: true, accountChannels: true, webUi: true },
+        capabilities: capabilities(),
       }),
       handleRequest: management.handleRequest,
       log: message => logger.warn?.(`our-free-model standalone: ${message}`),
@@ -120,23 +119,27 @@ export async function startStandalone({
       return refreshInFlight
     }
     // 启动可强制探测；后续周期刷新遵守核心的限流退避。
-    const ready = Promise.all([channels.ready, refresh ? refreshModels(settings.get().standaloneProbe === true) : Promise.resolve()])
+    const ready = refresh ? refreshModels(settings.get().standaloneProbe === true) : Promise.resolve()
     return {
       product: PRODUCT, version: VERSION, dataDir,
       url: `http://${host === '::1' ? '[::1]' : host}:${listener.port}`,
       managementUrl: `http://${host === '::1' ? '[::1]' : host}:${listener.port}/${management.bootstrapFragment}`,
       port: listener.port,
       keyFile: path.join(dataDir, 'settings.json'),
-      runtime, channels, ready,
+      runtime, accountConnectors, channels: accountConnectors, ready,
       close() {
         if (closing !== undefined) return closing
         stopped = true
         clearTimeout(timer)
         management.dispose()
         eac.dispose()
-        runtime.dispose()
+        coreRuntime.dispose()
         closing = (async () => {
-          try { await Promise.all([listener.close(), channels.close()]) } finally {
+          try {
+            const results = await Promise.allSettled([listener.close(), accountConnectors.dispose()])
+            const failures = results.filter(result => result.status === 'rejected').map(result => result.reason)
+            if (failures.length) throw new AggregateError(failures, '独立服务停止时有资源未能退出')
+          } finally {
             stores.dispose()
             releaseLock()
           }
@@ -149,9 +152,9 @@ export async function startStandalone({
     clearTimeout(timer)
     management?.dispose()
     eac?.dispose()
-    runtime?.dispose()
+    coreRuntime?.dispose()
     if (listener) await listener.close()
-    await channels?.close()
+    await accountConnectors?.dispose()
     stores?.dispose()
     releaseLock()
     throw error

@@ -45,15 +45,16 @@ const suites = [
   ['updater', 'updater-test.mjs', []],
   ['upgrade-ui', 'upgrade-ui-test.mjs', []],
   ['forward', 'forward-test.mjs', []],
-  ['chan-relay', 'chan-relay-test.mjs', []],
-  ['channel-pack', 'channel-pack-test.mjs', []],
-  ['channel-network', 'channel-network-test.mjs', []],
   ['forward-boot', 'forward-boot-test.mjs', []],
+  ['account-connectors-host', 'account-connectors-host-test.mjs', []],
+  ['account-connectors-lifecycle', 'account-connectors-lifecycle-test.mjs', []],
+  ['account-connectors-plugin', 'account-connectors-plugin-test.mjs', []],
+  ['core-package-boundary', 'core-extension-boundary-test.mjs', []],
+  ['standalone-extensions', 'standalone-extensions-test.mjs', []],
   ['standalone', 'standalone-test.mjs', []],
   ['desktop', 'desktop-test.mjs', []],
   ['standalone-management', 'standalone-management-test.mjs', []],
   ['standalone-frontend', 'standalone-frontend-test.mjs', []],
-  ['standalone-channels', 'standalone-channels-test.mjs', []],
   ['egress', 'egress-test.mjs', []],
   ['effort', 'effort-test.mjs', []],
   ['projection', 'projection-test.mjs', []],
@@ -87,7 +88,6 @@ const suites = [
   ['anthropic', 'anthropic-test.mjs', []],
   ['aggregate', 'aggregate-test.mjs', []],
   ['aggregate-wiring', 'aggregate-wiring-test.mjs', []],
-  ['gateway-source', 'gateway-source-test.mjs', []],
 ].filter(([name]) => (mode === 'contributor' ? !['manifest', 'release'].includes(name)
   : mode === 'release' ? releaseSuites.has(name) : true)
   && (only === null || name.startsWith(only)))

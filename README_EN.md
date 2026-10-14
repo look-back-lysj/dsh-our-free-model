@@ -1,4 +1,6 @@
 <div align="center">
+
+> Local separation branch (2026-10-14): product-account connectors are a separately installed, opt-in extension. The core contains installation guidance and optional cooperation; EAC, free/Kilo lanes, API-key aggregation and the core gateway remain. See [account connectors](docs/account-connectors.md). Older dated verification notes describe their historical snapshots.
   <img src="icon.svg" alt="Our Free Model — free model provider plugin for DeepSeek Harness" width="120">
 
 # dsh-our-free-model

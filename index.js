@@ -34,9 +34,8 @@ import { DATA_DIR_NAME, decodeWindow, resolveDshHome } from './src/store.js'
 import { isEacEntry, isKiloEntry } from './src/catalog.js'
 import { STATE } from './src/probe.js'
 import { generateKey, rankLanAddresses, startForwardServer, startLanRelay } from './src/forward.js'
-import { chanGatewayCredential, chanGatewayEnabled, chanGatewayPort, startChanRelay } from './src/chan-relay.js'
 import { CODE, UpstreamError } from './src/http.js'
-import { egressActive, egressFetch, outletLabel, readOutletSelection, startEgressRelay } from './src/egress.js'
+import { outletLabel, readOutletSelection, startEgressRelay } from './src/egress.js'
 import { directFetch } from './src/eac.js'
 import { clearEacUser, readEacUser, writeEacUser } from './src/eac-user.js'
 import { createEacLoginPoller } from './src/eac-login.js'
@@ -56,6 +55,7 @@ import { addSavings, describeSavingsTotal, emptySavings, saverConfig, savingsPer
 import { CAVEMAN_LEVELS, PONYTAIL_LEVELS } from './src/token-saver/prompts.js'
 import { OPTIMIZATIONS } from './src/local-optimize.js'
 import { createModelRuntime, createRuntimeStores } from './src/core/runtime.js'
+import { createOptionalAccountBridge, combineCoreWithAccountConnectors } from './src/extensions/account-connectors.js'
 
 export { fromOpenAiMessages } from './src/core/completion.js'
 import { buildStats } from './src/core/stats.js'
@@ -154,6 +154,11 @@ function distributionOf(config, settings) {
 
 export function apply(ctx, config) {
   const logger = ctx.logger ?? console
+  // Opportunistic lookup: an absent or temporarily unavailable addon cannot
+  // make this plugin wait for credentials, commands, or an account service.
+  const optional = service => {
+    try { return typeof ctx.get === 'function' ? ctx.get(service) : undefined } catch { return undefined }
+  }
   const home = resolveDshHome()
   const dataDir = path.resolve(home, DATA_DIR_NAME)
   fs.mkdirSync(dataDir, { recursive: true })
@@ -427,8 +432,14 @@ export function apply(ctx, config) {
     onSealedUnavailable: () => logger.warn?.('our-free-model: the sealed lane is not available in this composition (no recognized host profile); its models stay hidden'),
     onTopology: () => emitTopology(),
   })
-  const { state, adapter, refreshCatalog, refreshAvailability, watchEgress, fetchListing, publicModelRows, syncAggregateCatalog } = modelRuntime
-  const runForwarded = modelRuntime.complete
+  const { state, adapter, refreshAvailability, watchEgress, fetchListing, syncAggregateCatalog } = modelRuntime
+  const accountBridge = createOptionalAccountBridge({ getService: () => optional('ofmAccountConnectors'), logger, stats })
+  // The extension owns its DSH supplier registrations. Only OFM's own model
+  // catalog and local completion surface participate in this optional bridge.
+  const apiRuntime = combineCoreWithAccountConnectors(modelRuntime, accountBridge)
+  const publicModelRows = () => apiRuntime.publicModelRows()
+  const refreshCatalog = options => apiRuntime.refreshCatalog(options)
+  const runForwarded = (request, onChunk) => apiRuntime.complete(request, onChunk)
 
   // ── registration ────────────────────────────────────────────────────────────
   const routes = () => Object.keys(state().membership)
@@ -681,120 +692,6 @@ export function apply(ctx, config) {
     }
   }
 
-  // ── the channels' gateway relay ─────────────────────────────────────────────
-  /**
-   * The absorbed pack serves every 白嫖 provider through one OpenAI-compatible
-   * gateway on the loopback. The relay is this plugin's own door in front of
-   * it: callers authenticate with `chanGateway.relay.key` and the forwarded
-   * hop is re-stamped with the gateway's own credential, which never leaves
-   * the host. Off until asked for; the settings page owns the switch.
-   */
-  let chanRelay = null
-  let chanRelayError = ''
-  let chanRelaySyncInFlight = null
-
-  function chanRelayKey() {
-    const relay = settings.get().chanGateway?.relay ?? {}
-    if (typeof relay.key === 'string' && relay.key !== '') return relay.key
-    const minted = generateKey()
-    settings.update({ chanGateway: { ...(settings.get().chanGateway ?? {}), relay: { ...(settings.get().chanGateway?.relay ?? {}), key: minted } } })
-    settings.flush()
-    return minted
-  }
-
-  function rotateChanRelayKey() {
-    const minted = generateKey()
-    settings.update({ chanGateway: { ...(settings.get().chanGateway ?? {}), relay: { ...(settings.get().chanGateway?.relay ?? {}), key: minted } } })
-    settings.flush()
-    return minted
-  }
-
-  /** The gateway's address and credential, read fresh: both can move (env). */
-  function chanGatewayTarget() {
-    return {
-      port: chanGatewayPort(process.env),
-      enabledByEnv: chanGatewayEnabled(process.env),
-      credential: chanGatewayCredential({ profileContext: optional('profileContext'), env: process.env }),
-    }
-  }
-
-  async function syncChanRelay() {
-    while (chanRelaySyncInFlight !== null) await chanRelaySyncInFlight.catch(() => {})
-    const run = syncChanRelayOnce()
-    chanRelaySyncInFlight = run
-    try { await run } finally { if (chanRelaySyncInFlight === run) chanRelaySyncInFlight = null }
-  }
-  async function syncChanRelayOnce() {
-    const relay = settings.get().chanGateway?.relay ?? {}
-    const wanted = relay.enabled === true
-    const host = String(relay.host ?? '').trim() || '127.0.0.1'
-    const port = Number.isFinite(Number(relay.port)) && Number(relay.port) > 0 ? Math.trunc(Number(relay.port)) : 0
-    const target = chanGatewayTarget()
-    if (chanRelay !== null && wanted && chanRelay.host === host && chanRelay.port === port) return
-    if (chanRelay === null && !wanted) return
-    if (chanRelay !== null) {
-      const closing = chanRelay
-      chanRelay = null
-      await closing.close().catch(() => {})
-    }
-    if (!wanted) { chanRelayError = ''; return }
-    if (port !== 0 && target.port === port) {
-      chanRelayError = 'the relay needs a port of its own (the gateway listens on ' + target.port + ')'
-      logger.warn?.(`our-free-model: channel gateway relay not started (${chanRelayError})`)
-      return
-    }
-    try {
-      chanRelay = await startChanRelay({
-        config: () => {
-          const current = settings.get().chanGateway?.relay ?? {}
-          const targetNow = chanGatewayTarget()
-          return {
-            enabled: current.enabled === true,
-            host: String(current.host ?? '').trim() || '127.0.0.1',
-            port: current.port ?? 0,
-            lanKey: chanRelayKey(),
-            gatewayHost: '127.0.0.1',
-            gatewayPort: targetNow.port,
-            gatewayKey: targetNow.credential?.key ?? '',
-          }
-        },
-        log: message => logger.warn?.(`our-free-model channel relay: ${message}`),
-      })
-      chanRelayError = ''
-      // The bound port goes back into the settings, so the page shows the
-      // address that actually answers (the OS picks when 0 was asked for).
-      const settled = settings.get().chanGateway ?? {}
-      settings.update({ chanGateway: { ...settled, relay: { ...(settled.relay ?? {}), port: chanRelay.port } } })
-      settings.flush()
-    } catch (error) {
-      chanRelayError = String(error?.message ?? error)
-      logger.warn?.(`our-free-model: channel gateway relay could not start (${chanRelayError})`)
-    }
-  }
-
-  function chanRelayStatus() {
-    const relay = settings.get().chanGateway?.relay ?? {}
-    const target = chanGatewayTarget()
-    return {
-      relay: {
-        enabled: relay.enabled === true,
-        running: chanRelay !== null,
-        host: chanRelay?.host ?? (String(relay.host ?? '').trim() || '127.0.0.1'),
-        port: chanRelay?.port ?? relay.port ?? 0,
-        hasKey: typeof relay.key === 'string' && relay.key !== '',
-        error: chanRelayError,
-      },
-      gateway: {
-        port: target.port,
-        enabledByEnv: target.enabledByEnv,
-        keyFound: target.credential !== null,
-        keyFromEnv: target.credential?.fromEnv === true,
-        keyPath: target.credential?.path ?? '',
-      },
-    }
-  }
-
-
   // ── egress outlet ───────────────────────────────────────────────────────────
   /** One gateway round trip at a time; the panel polls, the throttle decides. */
   let latencyMeasureInFlight = null
@@ -1005,7 +902,6 @@ export function apply(ctx, config) {
    * therefore resolved per request below, and `webServer` gets its own fiber (see
    * the `ctx.inject` at the end of this section).
    */
-  const optional = service => (typeof ctx.get === 'function' ? ctx.get(service) : undefined)
   /**
    * The trust fence's view of the connection service, looked up per request.
    *
@@ -1017,46 +913,18 @@ export function apply(ctx, config) {
    * its own structural check instead of reading as "admitted".
    */
   const fenceConnection = connectionAdmissionView(() => optional('connection'))
-  // ── the absorbed free-channel pack ──────────────────────────────────────────
-  /**
-   * The 白嫖 channels — CodeArts (华为云), CodeBuddy / WorkBuddy (腾讯), LobsterAI
-   * (有道), Qoder / Qoder CN (阿里系), TRAE (字节), Cline, Loomy (讯飞), Raccoon
-   * (商汤), MiniMax Code, ZCode (智谱) and Gemini (Google) — are
-   * carried with local integration adaptations from the plugin that shipped them, vendored under
-   * `vendor/channel-pack` (provenance in `vendor/channel-pack/NOTICE.md`). Mounting the
-   * pack keeps every login flow, account pool, credit claim, model blacklist
-   * and its local OpenAI gateway working as they were validated upstream,
-   * instead of being re-implemented here and drifting.
-   *
-   * The pack runs on a fiber of its own, after `credentials`, `commands` and
-   * `llm` exist. A composition without them — a headless TUI, the offline test
-   * harness — keeps the free lane and loses only the channels, the same trade
-   * this plugin makes for every optional service. `channelPack` is the state
-   * bit `/summary` reports so the page can say *why* the channel list is empty
-   * instead of showing nothing.
-   */
-  let channelPack = { state: 'pending', error: '' }
-  ctx.inject(['credentials', 'commands', 'llm'], scoped => {
-    let stopped = false
-    scoped.effect(() => () => { stopped = true }, 'our-free-model: channel pack')
-    // Dynamic import: the pack's own imports (the kernel's llm and credential
-    // modules) are host-provided, and a composition that lacks them must still
-    // load this plugin's free lane. `pack.js` is the bundled form of the
-    // vendored tree (see scripts/build-channel-pack.mjs) — one file, so the
-    // release manifest stays inside its file cap.
-    void import('./vendor/channel-pack/pack.js').then(pack => {
-      if (stopped) return
-      pack.apply(scoped, {
-        disableOpencode: true,
-        outlet: { active: egressActive, fetch: egressFetch },
-      })
-      channelPack = { state: 'ready', error: '' }
-      logger.info?.('our-free-model: free-channel pack mounted (CodeArts, CodeBuddy, and 11 more)')
-    }).catch(error => {
-      if (stopped) return
-      channelPack = { state: 'failed', error: String(error?.message ?? error).slice(0, 300) }
-      logger.warn?.(`our-free-model: free-channel pack unavailable (${channelPack.error})`)
+  // Discovery is read-only; refresh reports the current descriptor/catalog.
+  // Login, installation and supplier credentials belong to the separate addon.
+  ctx.effect(() => {
+    const unsubscribe = accountBridge.subscribe(() => {
+      if (!disposed) push.emit('extensions', { accountConnectors: publicAccountExtension(accountBridge.state()) })
     })
+    void accountBridge.refresh().catch(error => logger.warn?.(`our-free-model: account extension detection failed (${error?.code ?? 'unavailable'})`))
+    return () => { unsubscribe?.(); accountBridge.dispose() }
+  }, 'our-free-model: optional account extension')
+  // Its optional child fiber never holds the core llm fiber pending.
+  ctx.inject(['ofmAccountConnectors'], () => {
+    if (!disposed) void accountBridge.refresh().catch(() => {})
   })
 
   const logAdmissionRejection = surface => ({ status, source, reason }) => {
@@ -1065,7 +933,7 @@ export function apply(ctx, config) {
     logger.warn?.(`our-free-model: ${surface} admission rejected status=${status} source=${source} reason=${reason}`)
   }
   const api = createApiRoutes({
-    settings, stats, availability, catalog: () => modelRuntime.catalog, state,
+    settings, stats, availability, catalog: () => apiRuntime.catalog, state: () => apiRuntime.state(),
     refreshCatalog, refreshAvailability, syncForward, syncRelay, syncEgress,
     pool: fetchPoolSnapshot,
     eacAuth,
@@ -1152,7 +1020,7 @@ export function apply(ctx, config) {
         // Every id a chain may reference, with the display name the picker uses —
         // the editor offers a searchable list instead of a free-text field, so a
         // typo cannot become a chain link that silently never resolves.
-        models: state().catalog.map(entry => ({ id: entry.id, name: entry.name, channel: entry.channel ?? 'free', vision: entry.vision === true })),
+        models: apiRuntime.catalog.map(entry => ({ id: entry.id, name: entry.name, channel: entry.channel ?? 'free', vision: entry.vision === true, ...(entry.source === undefined ? {} : { source: entry.source }) })),
         strategies: ['fallback', 'round-robin'],
       }),
       save: async patch => {
@@ -1163,8 +1031,8 @@ export function apply(ctx, config) {
         // closed, and dropping the link would quietly rewrite the user's chain.
         settings.update({ combos: rows })
         settings.flush()
-        const catalog = syncAggregateCatalog()
-        return { combos: rows, usable: catalog.filter(isComboEntry).map(entry => ({ id: entry.id, name: entry.name, models: entry.combo })) }
+        syncAggregateCatalog()
+        return { combos: rows, usable: apiRuntime.catalog.filter(isComboEntry).map(entry => ({ id: entry.id, name: entry.name, models: entry.combo })) }
       },
     },
     // ── token savers ────────────────────────────────────────────────────────
@@ -1218,35 +1086,9 @@ export function apply(ctx, config) {
       lanKey: settings.get().forwardLanKey ?? '',
       models: publicModelRows().map(row => row.id),
     }),
-    // The absorbed channel pack's liveness, for the 白嫖接入 page: the page
-    // renders its channel grid from this bit plus the pack's own RPC.
-    channels: () => channelPack,
-    chanRelay: {
-      status: chanRelayStatus,
-      apply: async patch => {
-        const current = settings.get().chanGateway ?? {}
-        const relay = { ...(current.relay ?? {}) }
-        if (patch === null || typeof patch !== 'object') throw httpError(400, 'the request body must be a JSON object')
-        if (patch.enabled !== undefined) relay.enabled = patch.enabled === true
-        if (patch.host !== undefined) {
-          const host = String(patch.host ?? '').trim()
-          if (host !== '' && host !== '127.0.0.1' && host !== 'localhost' && host !== '0.0.0.0' && host !== '::') {
-            throw httpError(400, 'host must be one of 127.0.0.1, localhost, 0.0.0.0, ::')
-          }
-          relay.host = host === 'localhost' ? '127.0.0.1' : host
-        }
-        if (patch.port !== undefined) {
-          const port = Number(patch.port)
-          if (!Number.isInteger(port) || port < 0 || port > 65535) throw httpError(400, 'port must be an integer between 0 and 65535')
-          relay.port = port
-        }
-        settings.update({ chanGateway: { ...current, relay } })
-        settings.flush()
-        await syncChanRelay()
-        return chanRelayStatus()
-      },
-      key: () => chanRelayKey(),
-      rotate: rotateChanRelayKey,
+    extensions: {
+      state: () => publicAccountExtension(accountBridge.state()),
+      refresh: async () => { await accountBridge.refresh(); return publicAccountExtension(accountBridge.state()) },
     },
     // Whether the co-paid lane is open on this host at all — the settings page's
     // one-bit answer to "why do I see no EAC group" (issue #60). Reads the gate,
@@ -1438,7 +1280,6 @@ export function apply(ctx, config) {
   ctx.effect(() => () => {
     void forward?.close().catch(() => {})
     void relay?.close().catch(() => {})
-    void chanRelay?.close().catch(() => {})
     void outletRelay?.close().catch(() => {})
   }, 'our-free-model: forward listener')
 
@@ -1472,8 +1313,6 @@ export function apply(ctx, config) {
       await syncForward()
       if (disposed) return
       await syncRelay()
-      if (disposed) return
-      await syncChanRelay()
       if (disposed) return
       // Every await here is a chance for teardown to have run underneath this
       // boot: a resumed refresh would force a probe round against stores it
@@ -1714,6 +1553,18 @@ function createApiRoutes(deps) {
       if (method === 'GET' && routePath === '/summary') {
         return send(200, buildSummary(deps))
       }
+      if (method === 'GET' && routePath === '/extensions/account-connectors') {
+        return send(200, { accountConnectors: deps.extensions.state() })
+      }
+      if (method === 'POST' && routePath === '/extensions/account-connectors/refresh') {
+        try { return send(200, { accountConnectors: await deps.extensions.refresh() }) }
+        catch { return send(503, { code: 'EXTENSION_DETECTION_FAILED', error: 'optional extension detection unavailable' }) }
+      }
+      // Retired account management and gateway paths never proxy to the addon.
+      // In particular, a credential body on one of these paths is not read.
+      if (/^\/(?:channels?|channel-pack|chan-gateway|account-connectors\/rpc)(?:\/|$)/.test(routePath)) {
+        return send(410, { code: 'ACCOUNT_CONNECTORS_MOVED', error: 'account management belongs to the optional account connectors plugin' })
+      }
       if (method === 'GET' && routePath === '/stats') {
         return send(200, buildStats(deps.stats.get(), deps.catalog()))
       }
@@ -1939,22 +1790,6 @@ function createApiRoutes(deps) {
       }
       if (method === 'POST' && routePath === '/forward/rotate') {
         return send(200, { key: deps.rotateKey() })
-      }
-      // The channels' gateway relay (the pack's loopback OpenAI endpoint,
-   // re-exposed under this plugin's own key). Status never carries a secret;
-      // the key routes are read by the same fence as every other route here.
-      if (method === 'GET' && routePath === '/chan-gateway') {
-        return send(200, deps.chanRelay.status())
-      }
-      if (method === 'POST' && routePath === '/chan-gateway/apply') {
-        const body = await readJson(req)
-        return send(200, await deps.chanRelay.apply(body))
-      }
-      if (method === 'GET' && routePath === '/chan-gateway/key') {
-        return send(200, { key: deps.chanRelay.key() })
-      }
-      if (method === 'POST' && routePath === '/chan-gateway/rotate') {
-        return send(200, { key: deps.chanRelay.rotate() })
       }
       if (method === 'GET' && routePath === '/forward/lan/key') {
         return send(200, { key: deps.settings.get().forwardLanKey ?? '' })
@@ -2290,6 +2125,23 @@ function publicSettings(settings, forwardInfo, egressInfo) {
   }
 }
 
+/** Only public collaboration metadata reaches the core settings API. */
+function publicAccountExtension(value = {}) {
+  const states = ['notinstalled', 'installed', 'disabled', 'ready', 'failed', 'incompatible', 'conflict']
+  const state = value?.state === 'not-installed' ? 'notinstalled' : states.includes(value?.state) ? value.state : 'failed'
+  const count = number => Number.isSafeInteger(number) && number >= 0 ? number : 0
+  return {
+    id: 'ofm.account-connectors', packageName: 'dsh-ofm-account-connectors',
+    state: value?.state === undefined ? 'notinstalled' : state,
+    installed: value?.installed === true, enabled: value?.enabled === true,
+    version: typeof value?.version === 'string' && /^[0-9A-Za-z.+-]{1,64}$/.test(value.version) ? value.version : '',
+    protocolVersion: count(value?.protocolVersion),
+    providerCount: count(value?.providerCount), modelCount: count(value?.modelCount),
+    // A descriptor can never turn this button into a remote download or script.
+    managementTarget: value?.managementTarget === '/ofm-account-connectors' ? '/ofm-account-connectors' : '',
+  }
+}
+
 function buildSummary(deps) {
   const state = deps.state()
   const snapshot = deps.availability.get()
@@ -2297,13 +2149,13 @@ function buildSummary(deps) {
   const update = deps.update.status()
   const feedView = deps.announcements.view()
   const defaultMaxTokens = deps.settings.get().defaultMaxTokens
-  // Lanes that carry no availability verdict of their own. The absorbed channels
+  // Lanes that carry no availability verdict of their own. Extension models
   // and the aggregate lane are named by a listing round that already succeeded,
   // and a combo is a view over rows that were themselves named — none of them is
   // pinged, so "no verdict" must not render as "unknown".
-  const unprobed = entry => isEacEntry(entry) || isKiloEntry(entry) || isAggregateEntry(entry) || isComboEntry(entry)
+  const unprobed = entry => entry.source === 'extension:ofm.account-connectors' || isEacEntry(entry) || isKiloEntry(entry) || isAggregateEntry(entry) || isComboEntry(entry)
   return {
-    catalog: state.catalog.map(entry => ({
+    catalog: deps.catalog().map(entry => ({
       ...entry,
       availability: unprobed(entry) ? STATE.available : (snapshot.results?.[entry.id]?.state ?? STATE.unknown),
       detail: unprobed(entry) ? '' : (snapshot.results?.[entry.id]?.detail ?? ''),
@@ -2335,9 +2187,7 @@ function buildSummary(deps) {
     // /eac/status on mount). `authorized: false` with the lane available is the
     // one state the model cards badge as locked.
     eacAuth: deps.eacAuth?.cached?.() ?? null,
-    // Whether the absorbed free-channel pack is live on this host, and its
-    // failure reason when it is not (see the mount in `apply`).
-    channels: deps.channels?.() ?? { state: 'unknown', error: '' },
+    extensions: { accountConnectors: deps.extensions?.state?.() ?? publicAccountExtension() },
     update: { available: update.available, latest: update.latest, current: update.current, checkedAt: update.checkedAt, applying: update.applying, managed: update.managed === true },
   }
 }
