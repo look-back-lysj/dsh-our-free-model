@@ -17,6 +17,12 @@
  * Run: node scripts/freetier-gate-test.mjs
  */
 import { chatFrames, stubUpstream } from './lib/fake-kernel.mjs'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+const testHome=fs.mkdtempSync(path.join(os.tmpdir(),'ofm-free-gate-'))
+const previousDshHome=process.env.DSH_HOME
+process.env.DSH_HOME=testHome
 
 let failures = 0
 const check = (name, actual, expected) => {
@@ -76,6 +82,8 @@ const region = classifyFailure(403, { error: { type: 'RegionError', message: 'Th
 check('a region refusal still reads as region-blocked', region.code, CODE.region)
 
 await stub.close()
+if(previousDshHome===undefined)delete process.env.DSH_HOME;else process.env.DSH_HOME=previousDshHome
+fs.rmSync(testHome,{recursive:true,force:true})
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) FAILED`)
 // Let Node drain the closed fetch/server handles. Calling process.exit here
 // races libuv's Windows socket teardown and can assert after all checks pass.

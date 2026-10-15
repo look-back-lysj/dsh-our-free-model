@@ -657,10 +657,11 @@ export class PluginUpdater {
    * @param {typeof fetch} [deps.fetchImpl]
    * @param {string} [deps.manifestPublicKey] - SPKI base64; tests substitute a
    *   throwaway keypair here, installs pin the release key
+   * @param {string} [deps.manifestLayout] - optional external-accounts-v1 layout fence
    * @param {string} [deps.runningVersion] - version captured by the running module
    */
-  constructor({ pkgDir, dataDir, settings, log = () => {}, fetchImpl = fetch, defaultSources = DEFAULT_MANIFEST_SOURCES, manifestPublicKey = PINNED_MANIFEST_PUBLIC_KEY, runningVersion }) {
-    this.deps = { pkgDir, dataDir, settings, log, fetchImpl, defaultSources, manifestPublicKey, runningVersion }
+  constructor({ pkgDir, dataDir, settings, log = () => {}, fetchImpl = fetch, defaultSources = DEFAULT_MANIFEST_SOURCES, manifestPublicKey = PINNED_MANIFEST_PUBLIC_KEY, runningVersion, manifestLayout }) {
+    this.deps = { pkgDir, dataDir, settings, log, fetchImpl, defaultSources, manifestPublicKey, runningVersion, manifestLayout }
     this.latest = undefined
     this.checkedAt = 0
     this.error = ''
@@ -777,6 +778,14 @@ export class PluginUpdater {
     try {
       this.reconcileRecovery()
       const { manifest, source } = await downloadManifest(this.sources(), { fetchImpl: this.deps.fetchImpl, verifyKey: this.deps.manifestPublicKey })
+      if (this.deps.manifestLayout === 'external-accounts-v1') {
+        // Compare filesystem-equivalent layout keys without rewriting signed fields.
+        const paths = manifest.files.map(file => path.posix.normalize(file.path).toLowerCase())
+        if (!paths.includes('src/extensions/account-connectors.js') || paths.some(file => file.startsWith('vendor/channel-pack/') || file.startsWith('packages/standalone/channels/') || file === 'src/chan-relay.js')) {
+          this.latest = undefined
+          throw new Error('此更新包是账号功能内置的整合版，不能覆盖当前分离版。请使用配套的分离版核心安装包升级，以免与独立账号插件重复注册。')
+        }
+      }
       const current = this.deps.runningVersion ?? this.currentVersion()
       if (manifest.minSupported !== undefined && current !== '' && compareVersions(current, manifest.minSupported) < 0) {
         throw new Error(`update path requires at least ${manifest.minSupported}; ${current} is installed`)

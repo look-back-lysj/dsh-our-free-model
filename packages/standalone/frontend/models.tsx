@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual'
 import { Boxes, Check, CircleAlert, CircleCheck, Copy, LoaderCircle, Play, RefreshCw, Search, SlidersHorizontal, Square, X } from 'lucide-react'
-import { providers } from 'ofm-provider-list'
 import { Badge, Button, Input } from './components/ui'
 import { filterModels } from './models-data.mjs'
 import type { Host, Model, ModelTestResult, Summary } from './types'
@@ -9,11 +8,10 @@ import './models.css'
 
 const availabilityNames: Record<string, string> = {
   available: '已探测可用', listed: '清单已收录', unknown: '未探测',
-  unavailable: '不可用', throttled: '限流中', 'region-blocked': '地区受限',
+  unavailable: '不可用', throttled: '限流中', 'region-blocked': '地区受限', 'access-restricted': '使用资格受限',
 }
 const sourceNames: Record<string, string> = { anonymous: '匿名模型', kilo: 'Kilo 免费池', eac: 'EAC 协付' }
-const channelName = (id: string) => sourceNames[id]
-  ?? providers.find(provider => provider.id === id)?.name ?? id
+const channelName = (id: string) => sourceNames[id] ?? id
 const number = (value: number) => new Intl.NumberFormat('zh-CN').format(value)
 const capacity = (value?: number) => value && Number.isFinite(value) && value > 0
   ? value >= 1000 ? `${Number((value / 1000).toFixed(1))}K` : number(value) : '未知'
@@ -79,6 +77,7 @@ export function Models({ summary, host, active }: { summary: Summary; host: Host
       if (kind === 'test' && model) {
         const result = await host.testModel(model.id, controller.signal)
         if (!isCurrent()) return
+        if (!result.text?.trim()) throw new Error('上游没有返回可见正文，尚未确认模型可用')
         setTest({ model, state: 'success', result })
         try {
           await host.refresh()
@@ -189,7 +188,7 @@ export function Models({ summary, host, active }: { summary: Summary; host: Host
           {virtual.getVirtualItems().map(item => {
             const model = models[item.index]
             const state = model.availability ?? 'unknown'
-            const disabledReason = !summary.settings.enabled ? '推理服务已暂停' : !model.routable ? '模型尚未公开，请检查渠道账号或模型设置' : operation ? '请等待当前操作完成' : ''
+            const disabledReason = !summary.settings.enabled ? '推理服务已暂停' : state === 'access-restricted' ? '上游限制当前客户端使用；重新探测只能检查状态，不能解除限制' : !model.routable ? '模型尚未公开，请检查渠道账号或模型设置' : operation ? '请等待当前操作完成' : ''
             return <div role="row" aria-rowindex={item.index + 2} key={item.key} data-index={item.index} data-model-id={model.id}
               className="model-table-row" ref={virtual.measureElement} style={{ transform: `translateY(${item.start}px)` }}
               onFocusCapture={() => setFocusedId(model.id)} onBlurCapture={event => {
@@ -200,8 +199,8 @@ export function Models({ summary, host, active }: { summary: Summary; host: Host
                 <Badge>{model.vision ? '视觉' : '纯文本'}</Badge>{model.reasoning && <Badge tone="blue">思考</Badge>}</div></div>
               <div role="cell" className="model-limits"><span title={model.contextWindow ? `${model.contextWindow} Token` : undefined}>{capacity(model.contextWindow)} <small>上下文</small></span>
                 <span title={model.maxOutput ? `${model.maxOutput} Token` : undefined}>{capacity(model.maxOutput)} <small>输出</small></span></div>
-              <div role="cell" className="model-state"><Badge tone={state === 'available' ? 'success' : ['unavailable', 'throttled', 'region-blocked'].includes(state) ? 'warning' : 'neutral'}>
-                {availabilityNames[state] ?? '未知状态'}</Badge>{!model.routable && <small>未公开</small>}
+              <div role="cell" className="model-state"><Badge tone={state === 'available' ? 'success' : ['unavailable', 'throttled', 'region-blocked', 'access-restricted'].includes(state) ? 'warning' : 'neutral'}>
+                {availabilityNames[state] ?? '未知状态'}</Badge>{state === 'access-restricted' ? <small title={model.detail}>当前客户端未获上游放行</small> : !model.routable && <small>未公开</small>}
                 {model.ttftMs != null && <small>首响应 {number(model.ttftMs)} ms</small>}</div>
               <div role="cell" className="model-row-actions">
                 <Button variant="ghost" title={`复制 ${model.id}`} aria-label={`复制模型 ID：${model.id}`} onClick={() => copyModelId(model)}
@@ -222,6 +221,6 @@ export function Models({ summary, host, active }: { summary: Summary; host: Host
       <p>{summary.catalog.length ? '调整搜索条件或清空筛选。' : '刷新清单后重试，或检查渠道连接。'}</p>
       {filtered && <Button variant="outline" onClick={() => changeFilters(initialFilters)}><SlidersHorizontal size={15} />清空筛选</Button>}
     </div>}
-    <p className="footnote">清单收录不代表实时可用。Kilo 免费池可能记录提示词，请勿发送敏感内容。</p>
+    <p className="footnote">免费标价、清单收录和当前客户端获准调用是不同状态。使用资格受限时，反复测试或重新登录不保证恢复。Kilo 免费池可能记录提示词，请勿发送敏感内容。</p>
   </div>
 }

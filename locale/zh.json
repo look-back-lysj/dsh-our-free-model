@@ -2,5 +2,22 @@
   "meta": {
     "title": "Our Free Model",
     "description": "在 DeepSeek Harness 内直连免密免费模型：清单跟随上游更新、地区可用性自动探测、思考强度档位真实生效，并附 Token 用量看板与 OpenAI 兼容的本地转发端口。"
+  },
+  "extensions": {
+    "accountConnectors": {
+      "title": "账号连接扩展",
+      "description": "单独安装、自主启用，通过独立插件管理产品账号；OFM 的免费模型、EAC 和官方 API 功能照常使用。",
+      "packageName": "dsh-ofm-account-connectors",
+      "installation": "当前为本地开发阶段，扩展尚未正式发行，没有可用的市场下载地址。请使用来源明确的本地开发包，核对发布者、版本和协作协议。",
+      "states": {
+        "notinstalled": "未安装",
+        "installed": "已安装 · 待启用",
+        "disabled": "已停用",
+        "ready": "已连接",
+        "failed": "连接故障",
+        "incompatible": "版本不兼容",
+        "conflict": "实例或模型冲突"
+      }
+    }
   }
 }

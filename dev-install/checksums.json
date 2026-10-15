@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-15",
+  "upstreamVersion": "2.3.0",
+  "upstreamRevision": "ac4c55ef5e0833bf0138846a7c5255ecbc14a07c",
+  "coreBranch": "sync/separated-upstream-20261015",
+  "extensionBranch": "sync/account-connectors-20261015",
+  "officialReleaseSigned": false,
+  "productionProfileModified": false,
+  "artifacts": [
+    {
+      "file": "dev-install/dsh-our-free-model-2.3.0.tgz",
+      "url": "https://raw.githubusercontent.com/look-back-lysj/dsh-our-free-model/refs/heads/sync/separated-upstream-20261015/dev-install/dsh-our-free-model-2.3.0.tgz",
+      "bytes": 416763,
+      "sha256": "3f228124033c9ea7755f75c978dbc5d7c0cb374c8b02c434afc66472f8f65432"
+    },
+    {
+      "file": "dev-install/dsh-ofm-account-connectors-0.1.0.tgz",
+      "url": "https://raw.githubusercontent.com/look-back-lysj/dsh-ofm-account-connectors/refs/heads/sync/account-connectors-20261015/dev-install/dsh-ofm-account-connectors-0.1.0.tgz",
+      "bytes": 1205204,
+      "sha256": "9eb9da4cb6cd48bc6d52789965f5d066ba27dea6473f92940c3addbc01af388d"
+    },
+    {
+      "file": "dev-install/account-connectors-0.1.0-dev.zip",
+      "url": "https://raw.githubusercontent.com/look-back-lysj/dsh-ofm-account-connectors/refs/heads/sync/account-connectors-20261015/dev-install/account-connectors-0.1.0-dev.zip",
+      "bytes": 1181246,
+      "sha256": "cc1fa4a47e48ce327ad379d1655c900fe0b8f425ab5f2e19679ad27a4943badd"
+    }
+  ]
+}

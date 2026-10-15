@@ -1,6 +1,6 @@
 Third-party notices for the standalone local development package
 
-The original OFM and channel-pack licenses are included separately.
+The original OFM license is included separately. Product account connector code is not bundled in this core package; optional extensions carry their own notices.
 The complete license of the bundled Node executable is in runtime/LICENSE.
 
 React 19.1.1, React DOM 19.1.1 and Scheduler 0.26.0

@@ -9,7 +9,7 @@ import { STATE, detectEgress, probeCatalog } from '../probe.js'
 import { CODE, getJson } from '../http.js'
 import { fetchSealedListing } from '../eac.js'
 import { fetchKiloListing } from '../kilo.js'
-import { mintRequestId, sessionForConversation } from '../upstream.js'
+import { createSessionMapper, mintRequestId, sessionForConversation } from '../upstream.js'
 import { createForwardCompletion, publicModelRows } from './completion.js'
 
 const FALLBACK_CATALOG = buildCatalog([
@@ -29,11 +29,21 @@ export function createRuntimeStores({ dataDir, logger = console }) {
   })
   const settings = open('settings.json', SETTINGS_INITIAL)
   const stats = open('stats.json', STATS_INITIAL)
+  // Load with the old version so files without a version cannot inherit v2
+  // before their legacy green evidence has been checked. New empty stores also
+  // normalize through the same migration once.
   const availability = open('availability.json', { version: 1, at: 0, egress: null, results: {} })
+  // Old probes accepted empty or unfinished 200 streams. Preserve negative
+  // evidence, but require fresh answer/terminal evidence for cached green rows.
+  if (availability.get().version === 1 || availability.get().version === undefined) availability.edit(value => ({
+    ...value, version: 2, results: Object.fromEntries(Object.entries(value.results ?? {}).map(([id, result]) => [id,
+      result?.state === STATE.available ? { ...result, state: STATE.unknown, at: 0, detail: '旧探测未校验正文和完整结束，请重新探测' } : result,
+    ])),
+  }))
   const catalogStore = open('catalog.json', { version: 1, at: 0, entries: FALLBACK_CATALOG.map(entry => entry.id) })
   if (stats.get().version !== STATS_VERSION) stats.edit(migrateStats)
   return {
-    settings, stats, availability, catalogStore,
+    settings, stats, availability, catalogStore, sessionMapper: createSessionMapper({ dataDir }),
     dispose() {
       settings.dispose(); stats.dispose(); availability.dispose(); catalogStore.dispose()
     },
@@ -45,7 +55,7 @@ export function createRuntimeStores({ dataDir, logger = console }) {
  * 创建不启动网络任务；入口先绑定本地监听器，再决定何时刷新和探测。
  */
 export function createModelRuntime({
-  settings, stats, availability, catalogStore,
+  settings, stats, availability, catalogStore, sessionMapper = sessionForConversation,
   logger = console,
   attributionUserAgent = 'our-free-model',
   resolveImage,
@@ -113,6 +123,7 @@ export function createModelRuntime({
   const emitTopology = () => { if (!disposed) onTopology() }
   const adapter = new FreeModelAdapter({
     state,
+    sessionMapper,
     resolveImage,
     sealedCredential,
     recordUsage: record => {
@@ -239,7 +250,7 @@ export function createModelRuntime({
     if (disposed) return { data: [] }
     const started = Date.now()
     const listing = await getJson('/inference/v1/models', {
-      session: sessionForConversation('catalog:our-free-model'),
+      session: sessionMapper('catalog:our-free-model'),
       requestId: mintRequestId(),
       attributionUserAgent,
       signal: lifetime.signal,
@@ -262,7 +273,7 @@ export function createModelRuntime({
     // endpoint of its own: probing one would send the chain's own id to the free
     // lane as a model name, spending quota to collect a verdict about nothing.
     const probeable = catalog.filter(entry => !isEacEntry(entry) && !isKiloEntry(entry) && !isAggregateEntry(entry) && !isComboEntry(entry))
-    const results = await probeCatalog(probeable, { attributionUserAgent, signal: lifetime.signal }, (id, result) => {
+    const results = await probeCatalog(probeable, { attributionUserAgent, sessionMapper, signal: lifetime.signal }, (id, result) => {
       if (disposed) return
       availability.edit(value => ({
         ...value,
@@ -357,7 +368,7 @@ export function computeMembership(catalog, availabilitySnapshot, settings) {
   const verdictOf = entry => results[entry.id]?.state
   const probeable = catalog.filter(entry => !entry.channel)
   const refusedAll = probeable.length > 0 && probeable.every(entry => verdictOf(entry) === STATE.unavailable)
-  let usable = catalog.filter(entry => verdictOf(entry) !== STATE.unavailable)
+  let usable = catalog.filter(entry => verdictOf(entry) !== STATE.unavailable && verdictOf(entry) !== STATE.accessRestricted)
   if (refusedAll) usable = catalog
   const main = []
   const region = []

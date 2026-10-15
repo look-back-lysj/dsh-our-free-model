@@ -12,28 +12,28 @@
  * forward listener up — then serves the real `client.js` to Chromium behind a
  * minimal shell and takes one screenshot per tab.
  *
- * The shell is not a re-implementation of the app. It provides the four services
+ * The shell is not a re-implementation of the app. It provides the three services
  * the bundle's `apply(ctx)` and its pages actually read — `slots`, `locale`,
- * `effect` and `connection.rpc` — over the plugin's own HTTP routes, which are
+ * `effect` — over the plugin's own HTTP routes, which are
  * proxied straight into the captured `(req, res)` handler. The theme tokens come
  * from the installed `@deepseek-ai/dsh-client-ui-theme` package, so the preview is
- * painted with the same palette the real shell paints.
+ * painted with its CSS tokens when available; fallback palettes are explicitly marked fixtures.
  *
  * React is the real thing: `react` + `react-dom/client` are bundled out of a
  * local install (see `moduleDirs`), not stubbed. When no install is present the
  * script says so and exits rather than photographing a fake tree.
  *
- * Screenshots land in `.verify/ui-preview/` (gitignored). The exit code is
+ * Screenshots default to `.verify/ui-preview/`; `--out-dir` selects an audit directory. The exit code is
  * non-zero when a tab throws, renders nothing, or paints a crash banner — a
  * silently blank page must never look like a pass.
  *
  * Local network only. Run: node scripts/ui-preview.mjs
  * Environment: OFM_PREVIEW_BROWSER (msedge|chrome), OFM_PREVIEW_MODULES (a
- * node_modules directory to resolve react/playwright from).
+ * node_modules directory to resolve react/playwright from). CLI: --out-dir <path>,
+ * --browser msedge|chrome|chromium, --themes light,dark.
  */
 import fs from 'node:fs'
 import http from 'node:http'
-import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { execSync } from 'node:child_process'
@@ -41,7 +41,39 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { callRoute, chatFrames, fakeContext, freePort, stubUpstream, until } from './lib/fake-kernel.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const OUT_DIR = path.join(ROOT, '.verify', 'ui-preview')
+const argv = process.argv.slice(2)
+function argument(name, fallback) {
+  const index = argv.indexOf('--' + name)
+  if (index === -1) return fallback
+  const value = argv[index + 1]
+  if (!value || value.startsWith('--')) throw new Error('--' + name + ' needs a value')
+  return value
+}
+const OUT_DIR = path.resolve(argument('out-dir', process.env.OFM_PREVIEW_OUT_DIR || path.join(ROOT, '.verify', 'ui-preview')))
+const THEMES = [...new Set(argument('themes', process.env.OFM_PREVIEW_THEMES || 'light,dark').split(','))]
+if (!THEMES.length || THEMES.some(theme => !['light', 'dark'].includes(theme))) throw new Error('themes must be light,dark')
+const BROWSER = argument('browser', process.env.OFM_PREVIEW_BROWSER || 'msedge')
+if (!['msedge', 'chrome', 'chromium'].includes(BROWSER)) throw new Error('browser must be msedge, chrome or chromium')
+const teardown = []
+const blockedHostRequests = []
+const fixtureHostRequests = []
+const allowedOrigins = new Set()
+const nativeFetch = globalThis.fetch.bind(globalThis)
+// Preview-only transport: a model probe may use the public-IP echo list, but
+// no external URL is dialed. Each synthetic answer is recorded in report.json.
+globalThis.fetch = async (value, options) => {
+  const url = new URL(typeof value === 'string' || value instanceof URL ? value : value.url)
+  if (['https://api.ipify.org/?format=json', 'https://ipinfo.io/json', 'https://ipapi.co/json/'].includes(url.href)) {
+    fixtureHostRequests.push({ kind: 'public-ip-fixture', source: url.hostname })
+    return new Response(JSON.stringify({ ip: '192.0.2.40', country: 'QA', country_code: 'QA' }), { headers: { 'content-type': 'application/json' } })
+  }
+  if (!allowedOrigins.has(url.origin)) {
+    blockedHostRequests.push({ host: url.hostname, method: options?.method ?? 'GET' })
+    throw new Error('Preview blocked a request outside its own local fixtures')
+  }
+  return nativeFetch(value, { ...options, redirect: 'error' })
+}
+teardown.push(() => { globalThis.fetch = nativeFetch })
 const say = (...parts) => console.log('ui-preview:', ...parts)
 
 /** A big, obviously-compressible tool result: a real `git diff` shape. */
@@ -56,7 +88,8 @@ const BIG_DIFF = [
   '',
 ].join('\n')
 
-const TABS = ['free', 'eac', 'channels', 'aggregate', 'saver', 'routing', 'ledger', 'logs', 'gateway', 'upgrade']
+const TABS = ['free', 'eac', 'extensions', 'aggregate', 'saver', 'routing', 'ledger', 'logs', 'gateway', 'upgrade']
+const FOCUS_TABS = ['free', 'eac', 'extensions', 'gateway', 'upgrade']
 
 // ── module resolution ────────────────────────────────────────────────────────
 /**
@@ -70,6 +103,8 @@ const TABS = ['free', 'eac', 'channels', 'aggregate', 'saver', 'routing', 'ledge
 function moduleDirs() {
   const dirs = [
     process.env.OFM_PREVIEW_MODULES,
+    process.env.OFM_PREVIEW_THEME_MODULES,
+    path.join(ROOT, 'packages', 'standalone', 'node_modules'),
     path.join(ROOT, 'node_modules'),
     path.join(ROOT, '..', 'node_modules'),
     path.join(ROOT, '..', '..', 'node_modules'),
@@ -108,7 +143,7 @@ function findPackageFile(dirs, pkg, file) {
 function themeCss(dirs) {
   const bundle = findPackageFile(dirs, path.join('@deepseek-ai', 'dsh-client-ui-theme', 'lib'), 'client.js')
     ?? findPackageFile(dirs, path.join('@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-client-ui-theme', 'lib'), 'client.js')
-  if (bundle === null) return { css: FALLBACK_THEME, from: 'built-in fallback tokens (the theme package is not installed)' }
+  if (bundle === null) return { css: FALLBACK_THEME, from: 'fixture: original fallback tokens; DSH theme package unavailable', fixture: true }
   const source = fs.readFileSync(bundle, 'utf8')
   const QUOTE = String.fromCharCode(34)
   const BACKSLASH = String.fromCharCode(92)
@@ -128,8 +163,8 @@ function themeCss(dirs) {
   }
   const css = ['base_css_default', 'design_platform_css_default', 'corner_shape_css_default', 'scrollbar_css_default', 'focus_css_default']
     .map(grab).filter(part => part !== '').join('\n')
-  if (css === '') return { css: FALLBACK_THEME, from: 'built-in fallback tokens (the theme bundle had no css block)' }
-  return { css, from: bundle }
+  if (css === '') return { css: FALLBACK_THEME, from: 'fixture: original fallback tokens; installed theme CSS could not be extracted', fixture: true }
+  return { css, from: bundle, fixture: false }
 }
 
 /** Palette + type scale, used only when the theme package is not installed. */
@@ -138,14 +173,20 @@ const FALLBACK_THEME = `
 body[data-ds-dark-theme]{--dsw-alias-bg-base:#151517;--dsw-alias-bg-layer-1:#1b1b1c;--dsw-alias-bg-layer-2:#232324;--dsw-alias-bg-layer-3:#2c2c2e;--dsw-alias-border-l1:#ffffff14;--dsw-alias-border-l2:#ffffff24;--dsw-alias-label-primary:#f5f5f5;--dsw-alias-label-secondary:#adb2b8;--dsw-alias-label-tertiary:#81858c}
 `
 
+try {
 // ── the plugin, booted exactly as the wiring suite boots it ───────────────────
 say('booting the host half through scripts/lib/fake-kernel.mjs')
 
 const freeLane = await stubUpstream({
-  listing: ['deepseek-v4-flash-free', 'mimo-v2.6-flash-free', 'kimi-k3-free'],
-  answer: () => ({ body: chatFrames('answered by the free lane') }),
+  listing: ['deepseek-v4-flash-free', 'mimo-v2.6-flash-free', 'kimi-k3-free', 'big-pickle'],
+  answer: id => id === 'big-pickle'
+    ? { status: 403, body: JSON.stringify({ error: { type: 'FreeTierError', message: 'OpenCode free tier is restricted to eligible clients (local visual fixture).' } }) }
+    : { body: chatFrames('answered by the free lane') },
 })
+allowedOrigins.add(new URL(freeLane.base).origin)
+teardown.push(() => freeLane.close())
 process.env.OUR_FREE_MODEL_BASE = freeLane.base
+process.env.OUR_FREE_MODEL_KILO_BASE = freeLane.base
 say(`free lane stub at ${freeLane.base}`)
 
 // The aggregate providers' endpoint. Their keys are seeded, so their models reach
@@ -170,12 +211,33 @@ const aggregateServer = http.createServer((req, res) => {
 })
 await new Promise(resolve => aggregateServer.listen(0, '127.0.0.1', resolve))
 aggregateServer.unref()
+teardown.push(() => new Promise(resolve => { aggregateServer.closeAllConnections?.(); aggregateServer.close(resolve) }))
 const aggregateBase = `http://127.0.0.1:${aggregateServer.address().port}`
+allowedOrigins.add(aggregateBase)
 say(`aggregate provider stub at ${aggregateBase}`)
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-ui-preview-'))
+const scratchRoot = path.join(OUT_DIR, '.scratch')
+fs.mkdirSync(scratchRoot, { recursive: true })
+const home = fs.mkdtempSync(path.join(scratchRoot, 'session-'))
+const previousHome = process.env.DSH_HOME
 process.env.DSH_HOME = home
+const previousTemp = { TMP: process.env.TMP, TEMP: process.env.TEMP }
+process.env.TMP = home
+process.env.TEMP = home
+teardown.push(() => {
+  if (previousHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = previousHome
+  for (const key of ['TMP', 'TEMP']) {
+    if (previousTemp[key] === undefined) delete process.env[key]
+    else process.env[key] = previousTemp[key]
+  }
+  // Only the verified scratch session may be recursively removed on Windows.
+  const base = fs.realpathSync(scratchRoot), actual = fs.realpathSync(home)
+  if (path.dirname(actual) !== base || !path.basename(actual).startsWith('session-')) throw new Error('Refusing to clean a path outside this preview session')
+  fs.rmSync(actual, { recursive: true, force: true })
+})
 const forwardPort = await freePort()
+allowedOrigins.add(`http://127.0.0.1:${forwardPort}`)
 // The plugin fires a first announcement-feed poll 12 s after boot. Its shipped
 // sources are GitHub URLs, and a `feedUrl` override is tried *before* them rather
 // than instead of them — so pointing it at a dead port would still fall through to
@@ -198,14 +260,16 @@ const feedServer = http.createServer((req, res) => {
 })
 await new Promise(resolve => feedServer.listen(0, '127.0.0.1', resolve))
 feedServer.unref()
+teardown.push(() => new Promise(resolve => { feedServer.closeAllConnections?.(); feedServer.close(resolve) }))
 const feedPort = feedServer.address().port
+allowedOrigins.add(`http://127.0.0.1:${feedPort}`)
 const dataDir = path.join(home, 'our-free-model')
 fs.mkdirSync(dataDir, { recursive: true })
 fs.writeFileSync(path.join(dataDir, 'settings.json'), JSON.stringify({
   enabled: true,
   probeIntervalMinutes: 15,
   // Nothing in this run may leave the machine: the release check is off outright,
-  // and the feed is pointed at a dead loopback port (see `feedPort` above).
+  // and the feed is served by this script's own loopback fixture.
   updateCheckHours: 0,
   feedUrl: `http://127.0.0.1:${feedPort}/feed.json`,
   forward: { enabled: true, host: '127.0.0.1', port: forwardPort, lan: { enabled: false, port: 0 } },
@@ -219,7 +283,7 @@ fs.writeFileSync(path.join(dataDir, 'settings.json'), JSON.stringify({
       // several models, a persisted listing probe and discovered ids.
       open_router: {
         enabled: true,
-        apiKey: 'sk-or-v1-0000000000000000000000000000000000000000000000000000f1a2',
+        apiKey: 'ofm-preview-fixture-not-a-real-key-0123',
         baseUrl: aggregateBase,
         models: ['deepseek/deepseek-v4-pro', 'qwen/qwen3-coder-480b-a35b-instruct', 'meta-llama/llama-3.3-70b-instruct:free'],
         discovered: ['deepseek/deepseek-v4-pro', 'qwen/qwen3-coder-480b-a35b-instruct', 'meta-llama/llama-3.3-70b-instruct:free', 'google/gemini-3.0-flash-exp:free'],
@@ -240,7 +304,7 @@ fs.writeFileSync(path.join(dataDir, 'settings.json'), JSON.stringify({
       ollama: {
         enabled: true,
         apiKey: '',
-        baseUrl: 'http://127.0.0.1:11434/v1',
+        baseUrl: aggregateBase,
         models: ['qwen3-coder:30b'],
         lastTest: null,
         addedAt: Date.now() - 600_000,
@@ -269,9 +333,15 @@ fs.writeFileSync(path.join(dataDir, 'settings.json'), JSON.stringify({
   ],
 }, null, 2))
 
+// The direct EAC transport also uses this preview's strict local guard.
+const { lane } = await import(pathToFileURL(path.join(ROOT, 'src/eac.js')).href)
+const originalLaneFetch = lane.fetch
+lane.fetch = globalThis.fetch
+teardown.push(() => { lane.fetch = originalLaneFetch })
 const { apply, inject } = await import(pathToFileURL(path.join(ROOT, 'index.js')).href)
 const routes = []
 const ctx = fakeContext({ inject, mounted: ['llm', 'webServer', 'timer', 'connection', 'attachments'], onRegister: route => routes.push(route) })
+teardown.push(() => { for (const dispose of [...ctx.__disposers].reverse()) dispose() })
 apply(ctx, {})
 const api = () => routes.find(route => route.kind === 'prefix')?.handler
 await until(() => api() !== undefined, { what: 'the settings API route', timeoutMs: 5000 })
@@ -333,7 +403,7 @@ if (reactFile === null || reactDomFile === null || reactDomLegacyFile === null |
   say('FAIL: no local react/react-dom/scheduler install was found.')
   say(`  looked in: ${dirs.join(', ')}`)
   say('  point OFM_PREVIEW_MODULES at a node_modules directory that holds all three, then re-run.')
-  process.exit(2)
+  throw new Error('Required local preview modules were not found')
 }
 const reactVersion = JSON.parse(fs.readFileSync(path.join(path.dirname(path.dirname(reactFile)), 'package.json'), 'utf8')).version
 say(`react ${reactVersion} + react-dom/client, bundled from ${path.dirname(path.dirname(reactFile))}`)
@@ -360,7 +430,7 @@ function bundleReact() {
     parts.push('\n};')
   }
   parts.push('function __r(id){if(__m[id]===undefined)throw new Error("the preview react bundle has no module \\""+id+"\\"");if(__c[id])return __c[id].exports;var m={exports:{}};__c[id]=m;__m[id].call(m.exports,m,m.exports,__r,{env:{NODE_ENV:"production"}},globalThis);return m.exports}')
-  parts.push('window.__previewReact=__r("react");window.__previewReactDOMClient=__r("react-dom/client");')
+  parts.push('window.__previewReact=__r("react");window.__previewReactDOM=__r("react-dom");window.__previewReactDOMClient=__r("react-dom/client");')
   parts.push('})();')
   return parts.join('\n')
 }
@@ -384,6 +454,7 @@ async function handle(req, res) {
     res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' })
     res.end(body)
   }
+  if (url.pathname === '/favicon.ico') return send(204, 'image/x-icon', '')
   if (url.pathname === '/') return send(200, 'text/html; charset=utf-8', shell)
   if (url.pathname === '/vendor/react.js') return send(200, 'text/javascript; charset=utf-8', bundleReact())
   // The plugin's own bundle, read per request so an edit shows up on reload.
@@ -434,6 +505,8 @@ function readBody(req) {
 
 await new Promise(resolve => server.listen(previewPort, '127.0.0.1', resolve))
 const origin = `http://127.0.0.1:${previewPort}`
+allowedOrigins.add(origin)
+teardown.push(() => new Promise(resolve => { server.closeAllConnections?.(); server.close(resolve) }))
 say(`preview server on ${origin}`)
 
 // ── the browser ──────────────────────────────────────────────────────────────
@@ -441,26 +514,35 @@ const playwright = requireFrom(dirs, 'playwright')
 if (playwright === null) {
   say('FAIL: playwright was not found in any of the directories above; cannot drive a browser.')
   server.close()
-  process.exit(2)
+  throw new Error('Required local preview modules were not found')
 }
 
 async function launch(pw) {
-  const wanted = process.env.OFM_PREVIEW_BROWSER
-  const channels = wanted === undefined ? ['msedge', 'chrome'] : [wanted]
-  const failures = []
-  for (const channel of channels) {
-    try { return await pw.chromium.launch({ channel, headless: true }) } catch (error) { failures.push(`${channel}: ${error?.message ?? error}`) }
-  }
-  try { return await pw.chromium.launch({ headless: true }) } catch (error) { failures.push(`bundled: ${error?.message ?? error}`) }
-  throw new Error(`no chromium could be launched —\n  ${failures.join('\n  ')}`)
+  // An explicit Edge run never silently becomes another browser.
+  return pw.chromium.launch({ headless: true, ...(BROWSER === 'chromium' ? {} : { channel: BROWSER }) })
 }
 
 const browser = await launch(playwright)
-say(`chromium: ${browser.browserType().name()} ${browser.version()}`)
+teardown.push(() => browser.close())
+say(`browser: ${BROWSER} / ${browser.browserType().name()} ${browser.version()}`)
 
 fs.mkdirSync(OUT_DIR, { recursive: true })
 const report = []
 const problems = []
+
+const blockedBrowserRequests = []
+const expectedCoreHttpResponses = []
+const interactions = []
+async function localBrowserContext(options) {
+  const context = await browser.newContext({ ...options, serviceWorkers: 'block' })
+  await context.route('**/*', route => {
+    const url = new URL(route.request().url())
+    if (url.origin === origin) return route.continue()
+    blockedBrowserRequests.push({ host: url.hostname, kind: route.request().resourceType() })
+    return route.abort('blockedbyclient')
+  })
+  return context
+}
 
 /**
  * One page: load the shell, wait for the tab strip, then click through the shots.
@@ -468,11 +550,24 @@ const problems = []
  * narrow, the dark and the English passes share one implementation.
  */
 async function shoot({ variant, width, height, scale, dark = false, locale = 'zh', shots }) {
-  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: scale, colorScheme: dark ? 'dark' : 'light' })
+  const context = await localBrowserContext({ viewport: { width, height }, deviceScaleFactor: scale, colorScheme: dark ? 'dark' : 'light' })
   const page = await context.newPage()
   let pageErrors = []
   page.on('pageerror', error => pageErrors.push(String(error?.message ?? error)))
-  page.on('console', message => { if (message.type() === 'error') pageErrors.push(`console: ${message.text()}`) })
+  page.on('console', message => {
+    if (message.type() !== 'error') return
+    const location = message.location()
+    let route = ''
+    try { route = new URL(location.url).pathname } catch { /* not a resource message */ }
+    // /pool documents no-lane with HTTP 404. It is expected only for this
+    // exact endpoint and this verified no-EAC composition, never for JS errors.
+    if (summaryView.laneAvailable === false && route === '/api/our-free-model/pool'
+      && /status of 404/.test(message.text())) {
+      expectedCoreHttpResponses.push({ variant, route, status: 404, reason: 'core EAC no-lane state' })
+      return
+    }
+    pageErrors.push('console: ' + message.text() + (location.url ? ' (' + location.url + ')' : ''))
+  })
   await page.goto(`${origin}/?locale=${locale}${dark ? '&theme=dark' : ''}`, { waitUntil: 'load' })
   try {
     await page.waitForSelector('.ofm_tabs .ofm_tab', { timeout: 15000 })
@@ -512,12 +607,15 @@ async function shoot({ variant, width, height, scale, dark = false, locale = 'zh
       continue
     }
     const measured = await measure(page)
+    fs.mkdirSync(path.dirname(path.join(OUT_DIR, entry.file)), { recursive: true })
     if (entry.selector === undefined) await page.screenshot({ path: path.join(OUT_DIR, entry.file), fullPage: true })
     else await page.locator(entry.selector).first().screenshot({ path: path.join(OUT_DIR, entry.file) })
     const line = {
       variant, file: entry.file, tab: entry.tab ?? entry.label ?? '—',
+      viewport: { width, height }, theme: dark ? 'dark' : 'light', locale,
+      palette: measured.palette, extensionState: measured.extensionState,
       crashed: measured.crashed, pageChars: measured.pageChars, rootChars: measured.rootChars,
-      horizontalScroll: measured.horizontalScroll, escapes: measured.escapes, ellipsis: measured.ellipsis,
+      horizontalScroll: measured.horizontalScroll, documentWidth: measured.scrollWidth, viewportWidth: measured.viewportWidth, overflowDetails: measured.overflowDetails, escapes: measured.escapes, ellipsis: measured.ellipsis,
       invisible: measured.invisible, skeletons: measured.skeletons, meterWidth: measured.meterWidth,
       gliderWidth: measured.gliderWidth, truncated: measured.truncated, invisibleText: measured.invisibleText,
       escapeList: measured.escapeList, pageErrors: pageErrors.slice(), crashText: measured.crashText,
@@ -525,6 +623,8 @@ async function shoot({ variant, width, height, scale, dark = false, locale = 'zh
     report.push(line)
     printLine(line)
     if (process.env.OFM_PREVIEW_AUDIT === '1') await audit(page, `${variant}/${entry.file}`)
+    for (const error of pageErrors) problems.push(`${variant}/${entry.file}: browser error — ${error.slice(0, 250)}`)
+    if (measured.rootChars === 0) problems.push(`${variant}/${entry.file}: settings panel is blank`)
     if (measured.crashed) problems.push(`${variant}/${entry.file}: the page painted a crash banner — ${measured.crashText}`)
     if (entry.tab !== undefined && measured.pageChars === 0) problems.push(`${variant}/${entry.file}: the tab rendered no visible text at all`)
     if (measured.horizontalScroll) problems.push(`${variant}/${entry.file}: the document scrolls horizontally (${measured.scrollWidth} > ${measured.viewportWidth})`)
@@ -546,7 +646,7 @@ async function waitForSettled(page, timeoutMs = 25000) {
       return {
         page: body === null ? -1 : body.innerText.replace(/\s+/g, ' ').trim().length,
         skeletons: document.querySelectorAll('.ofm_skel').length,
-        crashed: document.querySelector('#crash[data-on]') !== null,
+        crashed: document.querySelector('#crash[data-on="1"]') !== null,
       }
     })
     if (snapshot.crashed) return
@@ -593,6 +693,19 @@ async function measure(page) {
     const meter = root === null ? null : root.querySelector('.ofm_meter i')
     const glider = root === null ? null : root.querySelector('.ofm_tabglider')
     const crash = document.getElementById('crash')
+    const viewport = window.innerWidth
+    const overflowDetails = []
+    if (document.documentElement.scrollWidth > viewport + 1 && root !== null) {
+      for (const node of root.querySelectorAll('*')) {
+        const rect = node.getBoundingClientRect()
+        if (rect.width === 0 || rect.right <= viewport + 1) continue
+        let clipped = false
+        for (let ancestor = node.parentElement; ancestor && ancestor !== root; ancestor = ancestor.parentElement) {
+          if (['hidden', 'clip', 'auto', 'scroll'].includes(getComputedStyle(ancestor).overflowX)) { clipped = true; break }
+        }
+        if (!clipped) overflowDetails.push({ selector: node.tagName.toLowerCase() + '.' + String(node.className?.baseVal ?? node.className ?? '').trim().replace(/\s+/g, '.'), right: Math.round(rect.right * 10) / 10, width: Math.round(rect.width * 10) / 10, text: clean(node.textContent).slice(0, 100) })
+      }
+    }
     return {
       pageChars: body === null ? 0 : clean(body.innerText).length,
       rootChars: root === null ? 0 : clean(root.innerText).length,
@@ -601,6 +714,7 @@ async function measure(page) {
       crashText: crash === null ? '' : clean(crash.textContent).slice(0, 300),
       horizontalScroll: document.documentElement.scrollWidth > window.innerWidth + 1,
       scrollWidth: document.documentElement.scrollWidth,
+      overflowDetails: overflowDetails.slice(-12),
       viewportWidth: window.innerWidth,
       escapes: escapeList.length,
       escapeList: escapeList.slice(0, 6),
@@ -610,6 +724,8 @@ async function measure(page) {
       invisibleText: invisibleText.slice(0, 8),
       meterWidth: meter === null ? null : Math.round(meter.getBoundingClientRect().width * 10) / 10,
       gliderWidth: glider === null ? null : Math.round(glider.getBoundingClientRect().width * 10) / 10,
+      palette: { dark: document.body.hasAttribute('data-ds-dark-theme'), background: getComputedStyle(document.body).backgroundColor, foreground: getComputedStyle(document.body).color, label: getComputedStyle(document.body).getPropertyValue('--dsw-alias-label-primary').trim() },
+      extensionState: body?.textContent.includes('未安装') || body?.textContent.includes('Not installed') ? 'not-installed' : null,
     }
   })
 }
@@ -674,92 +790,45 @@ function printLine(line) {  const parts = [
   for (const row of line.invisibleText) say(`        opacity:0: .${row.cls} “${row.text}”`)
   for (const row of line.escapeList) say(`        escapes:  .${row.cls} “${row.text}”`)
   for (const error of line.pageErrors) say(`        page error: ${error.slice(0, 200)}`)
+  for (const element of line.overflowDetails ?? []) say(`        viewport overflow: ${element.selector} right=${element.right}px width=${element.width}px`)
   if (line.crashed) say(`        crash: ${line.crashText}`)
 }
 
-// The nine tabs, in tab order, at a desktop width.
-const numbered = TABS.map((tab, index) => ({ tab, file: `${String(index + 1).padStart(2, '0')}-${tab}.png` }))
-const labels = await shoot({ variant: 'wide', width: 1280, height: 900, scale: 1, shots: numbered })
-say(`tab strip: ${labels.join(' | ')}`)
-
-// The real settings panel is ~420 px wide, so the three new pages get that width
-// on their own — a wide shot cannot show a control that only breaks when it has
-// to wrap.
-await shoot({
-  variant: 'narrow', width: 420, height: 820, scale: 2,
-  shots: [
-    { tab: 'aggregate', file: 'aggregate-narrow.png' },
-    { tab: 'saver', file: 'saver-narrow.png' },
-    { tab: 'routing', file: 'routing-narrow.png' },
-    { tab: 'gateway', file: 'gateway-narrow.png' },
-  ],
+// Every page at desktop width in each selected theme. Only the five focus
+// pages are repeated at 320/390 px to keep the run bounded.
+const numbered = TABS.map((tab, index) => ({ tab, file: String(index + 1).padStart(2, '0') + '-' + tab + '.png' }))
+for (const themeName of THEMES) {
+  const dark = themeName === 'dark'
+  const directory = themeName + '-desktop'
+  const labels = await shoot({ variant: directory, width: 1280, height: 900, scale: 1, dark,
+    shots: [...numbered.map(entry => ({ ...entry, file: path.join(directory, entry.file) })),
+      { tab: 'extensions', file: path.join(directory, 'extensions-install-guide.png'), before: async page => {
+        await page.getByRole('button', { name: '查看安装方法', exact: true }).click()
+        await page.locator('#ofm-account-install-guide').waitFor({ state: 'visible' })
+        await page.getByRole('button', { name: '刷新检测', exact: true }).click()
+        await page.getByText('已刷新扩展状态与公开模型目录。', { exact: true }).waitFor()
+      } }],
+  })
+  say('tab strip (' + themeName + '): ' + labels.join(' | '))
+  for (const width of [320, 390]) {
+    const variant = themeName + '-' + width
+    await shoot({ variant, width, height: 820, scale: 1, dark,
+      shots: [...FOCUS_TABS.map(tab => ({ tab, file: path.join(variant, tab + '.png') })),
+        { tab: 'extensions', file: path.join(variant, 'extensions-install-guide.png'), before: async page => {
+          await page.getByRole('button', { name: '查看安装方法', exact: true }).click()
+          await page.locator('#ofm-account-install-guide').waitFor({ state: 'visible' })
+        } }],
+    })
+  }
+}
+await shoot({ variant: 'en-390', width: 390, height: 820, scale: 1, locale: 'en',
+  shots: [{ tab: 'extensions', file: 'en-390/extensions.png' }, { tab: 'upgrade', file: 'en-390/upgrade.png' }],
 })
-
-// The two overlays the new pages open, and the sections they live in, close up.
-await shoot({
-  variant: 'open', width: 1280, height: 900, scale: 2,
-  shots: [
-    {
-      tab: 'aggregate', label: 'aggregate+picker', file: 'aggregate-picker.png',
-      before: async page => { await page.getByRole('button', { name: '添加提供商', exact: true }).click() },
-    },
-    {
-      tab: 'routing', label: 'routing+editor', file: 'routing-editor.png',
-      before: async page => { await page.getByRole('button', { name: '编辑', exact: true }).first().click() },
-    },
-    {
-      tab: 'routing', label: 'routing+editor+picker', file: 'routing-editor-picker.png',
-      before: async page => {
-        await page.getByRole('button', { name: '编辑', exact: true }).first().click()
-        await page.getByRole('button', { name: '添加成员', exact: true }).first().click()
-      },
-    },
-  ],
-})
-
-// Close-ups of the sections that carry the new controls.
-await shoot({
-  variant: 'detail', width: 1280, height: 900, scale: 2,
-  shots: [
-    { tab: 'aggregate', label: 'aggregate cards', file: 'aggregate-cards.png', selector: '.ofm_sec >> nth=0' },
-    { tab: 'saver', label: 'saver prompt savers', file: 'saver-savers.png', selector: '.ofm_sec >> nth=1' },
-    { tab: 'routing', label: 'routing chains', file: 'routing-cards.png', selector: '.ofm_sec >> nth=0' },
-    { tab: 'gateway', label: 'gateway clients', file: 'gateway-clients.png', selector: '.ofm_sec >> nth=2' },
-  ],
-})
-
-// The palette switch: the stylesheet promises the page survives it. The free tab
-// is here because its switches are the same component the new pages use — a
-// scheme problem in one is a scheme problem in all of them.
-await shoot({
-  variant: 'dark', width: 1280, height: 900, scale: 1, dark: true,
-  shots: [
-    { tab: 'free', file: 'free-dark.png' },
-    { tab: 'aggregate', file: 'aggregate-dark.png' },
-    { tab: 'saver', file: 'saver-dark.png' },
-    { tab: 'routing', file: 'routing-dark.png' },
-  ],
-})
-
-// The English copy is longer than the Chinese on nearly every label, which is
-// where a nowrap or a fixed-width box gives itself away.
-await shoot({
-  variant: 'en', width: 420, height: 820, scale: 2, locale: 'en',
-  shots: [
-    { tab: 'aggregate', file: 'en-aggregate-narrow.png' },
-    { tab: 'saver', file: 'en-saver-narrow.png' },
-    { tab: 'routing', file: 'en-routing-narrow.png' },
-  ],
-})
-
-// A control that writes: the saver's RTK switch POSTs, and the page must show the
-// answer the host stored rather than the click. It is clicked back afterwards, so
-// the run leaves the settings file as it found them.
 await interactionPass()
 
 /** Click one switch, look at what it becomes, and put it back. */
 async function interactionPass() {
-  const context = await browser.newContext({ viewport: { width: 900, height: 900 }, deviceScaleFactor: 2 })
+  const context = await localBrowserContext({ viewport: { width: 900, height: 900 }, deviceScaleFactor: 1 })
   const page = await context.newPage()
   const errors = []
   page.on('pageerror', error => errors.push(String(error?.message ?? error)))
@@ -779,29 +848,35 @@ async function interactionPass() {
   await rtk.click()
   await until(async () => await read() === before, { what: 'the switch to return', timeoutMs: 15000 })
   say(`[interaction] restored to ${before}`)
+  interactions.push({ action: 'RTK switch', before, after, restored: await read(), screenshot: 'saver-switch-toggled.png', errors })
   if (after === before) problems.push('interaction: the RTK switch did not change state after a click')
   for (const error of errors) problems.push(`interaction: page error — ${error.slice(0, 160)}`)
   await context.close()
 }
 
 // ── wrap up ──────────────────────────────────────────────────────────────────
-await browser.close()
-server.close()
-for (const dispose of ctx.__disposers ?? []) { try { dispose() } catch { /* teardown is best effort */ } }
-freeLane.close()
-feedServer.close()
-aggregateServer.close()
-fs.rmSync(home, { recursive: true, force: true })
-
-say('')
-say(`${report.length} screenshots in ${OUT_DIR}`)
-if (problems.length === 0) {
-  say('no blank pages, no crash banners, no horizontal scrolling.')
-} else {
-  say(`${problems.length} problem(s) a user would notice:`)
-  for (const problem of problems) say(`  - ${problem}`)
+if (blockedHostRequests.length || blockedBrowserRequests.length) problems.push('Preview blocked an unexpected network request; see report.json')
+const evidence = {
+  generatedAt: new Date().toISOString(), result: problems.length === 0 ? 'passed' : 'failed',
+  browser: { channel: BROWSER, version: browser.version() }, react: reactVersion,
+  source: { index: path.join(ROOT, 'index.js'), client: path.join(ROOT, 'client.js') },
+  palette: { from: theme.from, fixture: theme.fixture },
+  environment: { coreHost: 'fake-kernel in isolated DSH_HOME', suppliers: 'loopback fixtures only', eac: 'real core no-lane state; no OAuth or live EAC supplier', extension: 'actual optional core bridge, no addon installed', existingProfileTouched: false },
+  network: { allowedOrigins: [...allowedOrigins], fixtureHostRequests, blockedHostRequests, blockedBrowserRequests },
+  screenshots: report, interactions, expectedCoreHttpResponses, problems,
 }
-process.exit(problems.length === 0 ? 0 : 1)
+fs.writeFileSync(path.join(OUT_DIR, 'report.json'), JSON.stringify(evidence, null, 2) + '\n')
+say('')
+say(report.length + ' page screenshots and ' + interactions.length + ' interaction screenshot(s) in ' + OUT_DIR)
+say('evidence: ' + path.join(OUT_DIR, 'report.json'))
+if (problems.length === 0) say('no blank pages, browser errors, crash banners or document horizontal scrolling.')
+else { say(problems.length + ' problem(s):'); for (const problem of problems) say('  - ' + problem) }
+process.exitCode = problems.length === 0 ? 0 : 1
+} finally {
+  for (const cleanup of teardown.reverse()) {
+    try { await cleanup() } catch (error) { console.error('ui-preview cleanup:', error?.message ?? error) }
+  }
+}
 
 // ── the shell page ───────────────────────────────────────────────────────────
 /**
@@ -843,7 +918,7 @@ window.__ModuleLoader__ = {
     try {
       window.__plugin = record.factory(name => {
         if (name === 'react') return window.__previewReact
-        if (name === 'react-dom') return window.__previewReactDOMClient
+        if (name === 'react-dom') return window.__previewReactDOM
         if (name === 'react-dom/client') return window.__previewReactDOMClient
         throw new Error('the preview shell provides no module "' + name + '"')
       })
@@ -894,52 +969,8 @@ window.__ModuleLoader__ = {
     },
   }
 
-  // ── connection.rpc: the pack's methods, answered well-formed and empty ─────
-  // This preview runs the plugin's own host half, not the absorbed channel pack,
-  // so every \`channel-pack\` method answers the shape its page expects with no
-  // rows in it — the pages then render their real empty states instead of the
-  // "no connection" callout.
-  // The pack's ledger, in the tree the three console pages read
-  // (channel → provider → account → models, plus a ring of individual requests
-  // keyed by \`ts\`). Small, but the same shape the real pack serves.
-  const accountTotals = { requests: 12, reportedRequests: 12, inputTokens: 18400, outputTokens: 2100, reasoningTokens: 640, cacheReadTokens: 4800, cacheWriteTokens: 0, errors: 0, ttftMs: 410, tps: 62.4 }
-  const modelTotals = { model: 'deepseek-v4-flash-free', requests: 12, inputTokens: 18400, outputTokens: 2100, reasoningTokens: 640, cacheReadTokens: 4800, cacheWriteTokens: 0, errors: 0, ttftMs: 410, tps: 62.4 }
-  const ledgerSnapshot = {
-    channels: [{
-      channel: 'deepseek',
-      providers: [{
-        provider: 'deepseek',
-        accounts: [{ accountId: 'preview@example.com', totals: accountTotals, models: [modelTotals] }],
-      }],
-    }],
-    totals: accountTotals,
-    entries: [
-      { ts: Date.now() - 240000, channel: 'direct', provider: 'deepseek', model: 'deepseek-v4-flash-free', accountId: 'preview@example.com', durationMs: 1820, ttftMs: 380, tps: 71.2, inputTokens: 1240, outputTokens: 180, reasoningTokens: 96, cacheReadTokens: 640, cacheWriteTokens: 0 },
-      { ts: Date.now() - 610000, channel: 'direct', provider: 'deepseek', model: 'deepseek-v4-flash-free', accountId: 'preview@example.com', durationMs: 1540, ttftMs: 420, tps: 58.9, inputTokens: 980, outputTokens: 140, reasoningTokens: 48, cacheReadTokens: 0, cacheWriteTokens: 0 },
-    ],
-  }
-  const rpcAnswers = {
-    'usage.autoCheckin': { autoCheckin: null },
-    'provider.status': { statuses: {} },
-    'account.list': { accounts: [] },
-    'model.list': { models: [] },
-    'credits.status': { accounts: [] },
-    'credits.balances': { accounts: [] },
-    'usage.tokenLedger': { snapshot: ledgerSnapshot },
-    'usage.tokenLedgerHistory': { history: [], totals: {} },
-    // The pack's gateway is not running in this composition; a stopped, keyless
-    // reading is the honest answer and still exercises the whole panel.
-    'gateway.getEnabled': { enabled: false, running: false, blockedByEnv: false, address: null, apiKey: null, models: [] },
-    'gateway.setEnabled': { enabled: false, running: false, blockedByEnv: false, address: null, apiKey: null, models: [] },
-  }
-  const connection = {
-    rpc: {
-      call: async (target, method, args) => {
-        const name = String(args?.method ?? '')
-        return { ok: true, value: Object.prototype.hasOwnProperty.call(rpcAnswers, name) ? rpcAnswers[name] : {} }
-      },
-    },
-  }
+  // No account pack, credential or account RPC mock is mounted in this shell.
+  // Extension detection reads the actual core API and reports not-installed.
 
   // ── the plugin's context ───────────────────────────────────────────────────
   // \`connection\` is deliberately *not* a readable property: the kernel withholds
@@ -955,7 +986,7 @@ window.__ModuleLoader__ = {
       } catch (error) { window.__crash('effect: ' + (error && error.message)) }
       return { [Symbol.dispose]() {} }
     },
-    get: name => name === 'connection' ? connection : name === 'slots' ? slots : name === 'locale' ? locale : undefined,
+    get: name => name === 'slots' ? slots : name === 'locale' ? locale : undefined,
     slots,
     locale,
     __disposers: disposers,

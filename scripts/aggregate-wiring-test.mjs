@@ -152,7 +152,7 @@ const post = (url, body) => callRoute(api(), 'POST', `/api/our-free-model${url}`
   checkThat('an aggregate row reached the catalog', aggregate !== undefined, [...byId.keys()].join(', '))
   check('the aggregate row names its lane', aggregate?.channel, 'aggregate')
   check('and carries its provider and model separately', [aggregate?.providerId, aggregate?.modelId], ['open_router', 'alpha-model'])
-  check('an aggregate row is not reported as unprobed-unknown', aggregate?.availability, 'available')
+  check('an aggregate row is listed without claiming a successful call', aggregate?.availability, 'listed')
 
   const keyless = byId.get('groq/llama-3.3-70b-versatile')
   checkThat('a provider with no key contributes no row', keyless === undefined, 'a keyless apiKey provider was advertised')
@@ -165,7 +165,7 @@ const post = (url, body) => callRoute(api(), 'POST', `/api/our-free-model${url}`
   // the aggregate row 131072, so the chain must advertise the smaller of the two.
   check('the combo advertises the intersection window, not the largest', combo?.contextWindow, 128000)
   check('a combo whose links lack vision advertises no vision', combo?.vision, false)
-  check('a combo is not reported as unprobed-unknown', combo?.availability, 'available')
+  check('a configured combo is listed without claiming a successful call', combo?.availability, 'listed')
   checkThat('the combo detail line names the chain', String(byId.get('combo:never-fails')?.detail ?? '').includes('chain') === false || true, '')
 }
 

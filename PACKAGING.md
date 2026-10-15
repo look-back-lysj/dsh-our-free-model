@@ -10,14 +10,16 @@
 
 插件与独立服务分别有自己的入口。桌面壳是独立服务的另一种启动方式，复用现有渠道、管理 API 与前端，不把独立服务合并为 DSH 插件。
 
-当前桌面代码用于开发和验证，构建安装包不等于发布正式 release。
+当前桌面代码用于开发和验证，构建安装包不等于发布正式 release。核心根目录未提供 npm 锁文件，所以根目录使用 npm install；standalone/desktop 各有锁文件，使用各自的 npm ci。
+
+产品账号业务不在核心安装包内。独立扩展另行安装/导入，首次保持停用；专用 WASM 由独立扩展携带。
 
 ## 独立服务
 
 在仓库根目录执行：
 
 ```powershell
-npm ci
+npm install --ignore-scripts --legacy-peer-deps
 npm --prefix packages/standalone ci
 node scripts/build-standalone-ui.mjs
 node packages/standalone/cli.mjs
@@ -36,7 +38,7 @@ node packages/standalone/cli.mjs
 在仓库根目录执行：
 
 ```powershell
-npm ci
+npm install --ignore-scripts --legacy-peer-deps
 npm --prefix packages/standalone ci
 node scripts/build-standalone-ui.mjs
 npm --prefix packages/desktop ci --ignore-scripts
@@ -47,7 +49,7 @@ npm --prefix packages/desktop run build
 
 工具链名称须对应本机已安装版本，也可以使用 `rustup toolchain install stable-x86_64-pc-windows-msvc` 安装。开发预览使用 `npm --prefix packages/desktop run dev`。
 
-构建钩子运行 `scripts/prepare-desktop.mjs`，将当前 Node 可执行文件和完整许可证、后端核心、独立服务、前端、渠道模块及 WASM 复制到固定生成目录。前端源码变动后应先运行上面的前端构建命令。离线环境可以设置 `OFM_DESKTOP_NODE_LICENSE` 为同一 Node 版本的完整官方 LICENSE 路径；许可证缓存命中时无需再次下载。
+构建钩子运行 `scripts/prepare-desktop.mjs`，将当前 Node 可执行文件和完整许可证、后端核心、独立服务、清单声明的前端与通用扩展宿主 复制到固定生成目录。前端源码变动后应先运行上面的前端构建命令。离线环境可以设置 `OFM_DESKTOP_NODE_LICENSE` 为同一 Node 版本的完整官方 LICENSE 路径；许可证缓存命中时无需再次下载。
 
 Tauri 将资源明确安装到 `service/` 和 `runtime/`。只复制 `ofm-desktop.exe` 无法跨电脑运行，应分发并安装完整 NSIS 包。用户需要 WebView2；Tauri 默认安装流程可引导安装缺失的运行时，离线机器需提前准备。
 
@@ -58,7 +60,7 @@ packages/desktop/src-tauri/target/release/ofm-desktop.exe
 packages/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
 ```
 
-`resources/`、Node 许可证缓存、`target/`、`dist/` 都是生成产物，不提交到 Git。最终分发目录可单独整理到 `dist/`，无需改变 Tauri 默认输出目录。
+`resources/`、Node 许可证缓存、`target/`、`dist/` 都是生成产物，不提交到源码树。本分支的 `dev-install/` 仅保存明确标注开发版的少量插件制品；完整桌面安装程序另作草稿附件。最终分发目录可单独整理到 `dist/`，无需改变 Tauri 默认输出目录。
 
 ## 启动、登录与退出
 

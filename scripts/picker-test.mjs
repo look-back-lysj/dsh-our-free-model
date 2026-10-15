@@ -28,20 +28,32 @@ const check = (name, actual, expected) => {
 
 const LISTING = [
   'mimo-v2.6-flash-free', 'space-bunny-free', 'deepseek-v4-flash-free',
-  'jev-1.13-free', 'ling-3.0-flash-fin-free', 'nemotron-3-ultra-free',
+  'fixture-chat-free', 'ling-3.0-flash-fin-free', 'nemotron-3-ultra-free',
   'nemotron-3.5-lightning-free', 'muse-spark-1.3-contributor-free',
 ]
+
+// Fixtures speak the selected model's actual protocol. Jev is SystemOne,
+// so the unrouted-chat case uses a synthetic ordinary chat id.
+function probeFrames(id) {
+  const sse = payload => 'data: ' + JSON.stringify(payload) + '\n\n'
+  if (id === 'union-alpha') return sse({type:'content_block_start',index:0,content_block:{type:'text',text:''}})
+    + sse({type:'content_block_delta',index:0,delta:{type:'text_delta',text:'OK'}})
+    + sse({type:'content_block_stop',index:0}) + sse({type:'message_delta',delta:{stop_reason:'end_turn'}}) + sse({type:'message_stop'})
+  if (id.startsWith('muse-spark')) return sse({type:'response.output_text.delta',item_id:'fixture',output_index:0,delta:'OK'})
+    + sse({type:'response.completed',response:{status:'completed'}})
+  return chatFrames()
+}
 
 /** One answer per model, standing in for what the lane really does. */
 let holdProbe = null
 function verdict(id) {
-  if (holdProbe !== null && id === holdProbe.model) return { wait: holdProbe.promise, body: chatFrames() }
+  if (holdProbe !== null && id === holdProbe.model) return { wait: holdProbe.promise, body: probeFrames(id) }
   if (id === 'deepseek-v4-flash-free') {
     return { status: 400, body: JSON.stringify({ error: { type: 'ModelError', message: 'Model is unavailable.' } }) }
   }
   // Named by the listing, no route for it at all: the message says the id, and
   // so does the status.
-  if (id === 'jev-1.13-free') return { status: 404, body: JSON.stringify({ error: { message: 'No such model: jev-1.13-free' } }) }
+  if (id === 'fixture-chat-free') return { status: 404, body: JSON.stringify({ error: { message: 'No such model: fixture-chat-free' } }) }
   // The gateway's own trouble, which is not a fact about the model.
   if (id === 'ling-3.0-flash-fin-free') return { status: 500, body: JSON.stringify({ error: { message: 'Internal server error' } }) }
   if (id === 'nemotron-3-ultra-free') {
@@ -53,8 +65,8 @@ function verdict(id) {
   if (id === 'nemotron-3.5-lightning-free') return { socket: true } // no answer at all: the probe learns nothing
   // Held by the test itself, so the "in the catalog, not yet probed" state can be
   // read as long as the test likes rather than racing a clock.
-  if (id === 'union-alpha') return { wait: gate.promise, body: chatFrames() }
-  return { body: chatFrames() }
+  if (id === 'union-alpha') return { wait: gate.promise, body: probeFrames(id) }
+  return { body: probeFrames(id) }
 }
 
 const stub = await stubUpstream({ listing: LISTING, answer: verdict })
@@ -98,7 +110,7 @@ await until(() => {
 })
 
 check('a refused model leaves the picker', (await advertised(ROUTE_MAIN)).includes('deepseek-v4-flash-free'), false)
-check('and so does one the listing names but no route answers for', (await advertised(ROUTE_MAIN)).includes('jev-1.13-free'), false)
+check('and so does one the listing names but no route answers for', (await advertised(ROUTE_MAIN)).includes('fixture-chat-free'), false)
 check('a working model stays', (await advertised(ROUTE_MAIN)).includes('mimo-v2.6-flash-free'), true)
 check('the gateway having trouble is not a verdict about the model',
   (await advertised(ROUTE_MAIN)).includes('ling-3.0-flash-fin-free'), true)
@@ -156,12 +168,12 @@ check('model discovery offers what the picker advertises, nothing more',
 
 const summary = await callRoute(api(), 'GET', '/api/our-free-model/summary')
 const rowOf = id => summary.json.catalog.find(row => row.id === id)
-check('the roster still lists the hidden model, with its verdict', [rowOf('jev-1.13-free').route, rowOf('jev-1.13-free').availability], [null, 'unavailable'])
-check('the refusal is on record for the user to read', /No such model/.test(rowOf('jev-1.13-free').detail), true)
+check('the roster still lists the hidden model, with its verdict', [rowOf('fixture-chat-free').route, rowOf('fixture-chat-free').availability], [null, 'unavailable'])
+check('the refusal is on record for the user to read', /No such model/.test(rowOf('fixture-chat-free').detail), true)
 check('and the picker positions of the working models are named', rowOf('mimo-v2.6-flash-free').route, ROUTE_MAIN)
 check('a reasoning model carries the rung ladder it will really send',
   rowOf('mimo-v2.6-flash-free').budgets.map(row => `${row.id}:${row.tokens}`), ['light:4096', 'balanced:16384', 'deep:32768'])
-check('a model with no effort menu carries no ladder to mislead with', rowOf('jev-1.13-free').budgets, undefined)
+check('a model with no effort menu carries no ladder to mislead with', midRoundRow.budgets, undefined)
 
 // The effort menu the composer shows has to print the same number, or it is the
 // issue-#2 mismatch wearing a different hat.
@@ -250,7 +262,7 @@ check('and the listener answers its own model list', listed.status, 200)
 // The listing already hides a model the gateway names but will not route. The
 // request path has to apply the same gate: naming it in a body used to bypass
 // the picker's verdict and dial upstream for an answer the probe already knew.
-const unroutedProbes = () => stub.requests.filter(row => row.body?.model === 'jev-1.13-free').length
+const unroutedProbes = () => stub.requests.filter(row => row.body?.model === 'fixture-chat-free').length
 const jevBefore = unroutedProbes()
 const unrouted = await fetch(`http://127.0.0.1:${forwardPort}/v1/chat/completions`, {
   method: 'POST',
@@ -258,7 +270,7 @@ const unrouted = await fetch(`http://127.0.0.1:${forwardPort}/v1/chat/completion
     authorization: `Bearer ${JSON.parse(fs.readFileSync(path.join(scratch, 'our-free-model', 'settings.json'), 'utf8')).forwardKey}`,
     'content-type': 'application/json',
   },
-  body: JSON.stringify({ model: 'jev-1.13-free', messages: [{ role: 'user', content: 'hi' }] }),
+  body: JSON.stringify({ model: 'fixture-chat-free', messages: [{ role: 'user', content: 'hi' }] }),
 })
 check('the forward port refuses a model the picker hides', unrouted.status, 404)
 check('and says so in the answer', /not found/.test(await unrouted.text()), true)

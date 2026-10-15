@@ -335,7 +335,7 @@ export class FreeModelAdapter {
     const budget = budgetFor(options.reasoningEffort, entry, options.maxTokens, settings.defaultMaxTokens)
     const declared = toToolDefs(options.tools, style)
     const policy = recoveryPolicy(settings.streamRecovery)
-    const session = sessionForConversation(options.sessionId)
+    const session = (this.deps.sessionMapper ?? sessionForConversation)(options.sessionId)
     const recoveryId = mintRequestId()
     let attemptMessages = messages
     let attemptBudget = budget

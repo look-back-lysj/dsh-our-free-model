@@ -3,6 +3,7 @@ import { Activity, ArrowRight, ArrowUpRight, Boxes, Check, CircleCheck, Copy, Ha
 import { Badge, Button, Card } from './ui'
 import '../usage.css'
 import type { Host, Snapshot } from '../types'
+import { extensionPresentation } from '../extension-data.mjs'
 
 const number = (value: number) => new Intl.NumberFormat('zh-CN').format(value)
 const compact = (value: number) => value >= 1e6 ? `${(value / 1e6).toFixed(1)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(1)}K` : number(value)
@@ -28,9 +29,11 @@ export function Overview({ summary, stats, host }: Snapshot & { host: Host }) {
   const total = days.reduce((sum, row) => sum + row.value, 0)
   const max = Math.max(1, ...days.map(row => row.value))
   const failures = [...stats.samples].reverse().filter(row => row.ok === false).slice(0, 4)
+  const connectors = summary.extensions.accountConnectors
+  const connectorPresentation = extensionPresentation(connectors)
   const sources = [
     { name: '匿名与 Kilo', sub: '无需账号的免费模型', icon: Zap, count: summary.catalog.filter(row => row.channel === 'anonymous' || row.channel === 'kilo').length, page: 'models' as const },
-    { name: '免费账号渠道', sub: '13 个供应商，独立账号池', icon: Network, count: summary.catalog.filter(row => !['anonymous', 'kilo', 'eac'].includes(row.channel)).length, page: 'channels' as const },
+    ...(connectorPresentation.canOpen ? [{ name: '账号连接扩展', sub: `独立扩展 v${connectors.version ?? '—'}`, icon: Network, count: connectors.modelCount, page: 'extensions' as const }] : []),
     { name: 'EAC 协付渠道', sub: summary.eacAuth?.local ? '已保存本机授权' : '尚未保存本机授权', icon: Handshake, count: summary.catalog.filter(row => row.channel === 'eac').length, page: 'eac' as const },
   ]
 
@@ -94,12 +97,13 @@ export function Overview({ summary, stats, host }: Snapshot & { host: Host }) {
           <span><strong>{source.name}</strong><small>{source.sub}</small></span>
           <Badge>{source.count} 个模型</Badge><ArrowRight size={14} />
         </button>)}</div>
+        {!connectorPresentation.canOpen && <div className="card-foot"><span>更多账号模型可通过自愿安装扩展接入</span><button onClick={() => host.navigate('extensions')}>查看扩展指引 <ArrowRight size={14} /></button></div>}
       </Card>
 
       <Card className="ov-failures">
         <div className="card-heading"><div><h2>运行检查</h2><p>服务与最近的失败请求</p></div>
           <Badge tone={failures.length ? 'warning' : 'success'}>{failures.length ? '有失败记录' : '暂无失败记录'}</Badge></div>
-        <div className="runtime-check"><CircleCheck size={17} /><span>渠道模块</span><strong>{summary.channels.state === 'ready' ? '已就绪' : summary.channels.state === 'failed' ? '加载失败' : '初始化中'}</strong></div>
+        <div className="runtime-check"><CircleCheck size={17} /><span>账号连接扩展</span><strong>{connectorPresentation.label}</strong></div>
         <div className="runtime-check"><RefreshCw size={17} /><span>模型自动刷新</span><strong>{summary.automaticRefresh ? `每 ${summary.settings.probeIntervalMinutes} 分钟` : '已暂停'}</strong></div>
         {failures.length ? <div className="failure-list ov-failure-list">{failures.map((row, index) =>
           <div key={`${row.at}-${index}`} className="ov-failure-row">

@@ -1,11 +1,16 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
+import path from 'node:path'
+import { accountConnectorsStatus } from './extensions.mjs'
 import { buildStats } from '../../src/core/stats.js'
 import { generateKey } from '../../src/forward.js'
 import { structuralRejection } from '../../src/trust.js'
 import { openLoginTerminal } from './login-terminal.mjs'
 
 const PREFIX = '/api/management'
+const CONNECTORS = `${PREFIX}/extensions/account-connectors`
+const EXTENSION_UI = `${CONNECTORS}/ui`
+const EXTENSION_ALIAS = '/extensions/account-connectors'
 const BOOTSTRAP_MS = 10 * 60_000
 const SESSION_MS = 8 * 60 * 60_000
 const MAX_BODY_BYTES = 16 * 1024
@@ -19,8 +24,8 @@ const SECURITY_HEADERS = {
   'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
 }
 
-function fail(statusCode, message) {
-  return Object.assign(new Error(message), { statusCode })
+function fail(statusCode, message, code) {
+  return Object.assign(new Error(message), { statusCode, code })
 }
 
 function matches(actual, expected) {
@@ -75,7 +80,7 @@ export function managementSettings(value) {
 }
 
 /** 管理读写要求鉴权；登录恢复仅允许同源页面触发固定本机动作。 */
-export function createManagement({ stores, runtime, channels, eac, info, onSettingsChanged, loginTerminal = openLoginTerminal }) {
+export function createManagement({ stores, runtime, accountConnectors, eac, info, onSettingsChanged, loginTerminal = openLoginTerminal }) {
   let bootstrap = { token: crypto.randomBytes(32).toString('base64url'), until: Date.now() + BOOTSTRAP_MS }
   const sessions = new Map()
   let cookieName
@@ -132,7 +137,8 @@ export function createManagement({ stores, runtime, channels, eac, info, onSetti
     const routable = new Set(runtime.publicModelRows().map(entry => entry.id))
     return {
       ...info(),
-      channels: channels?.state(),
+      extensions: { accountConnectors: accountConnectorsStatus(accountConnectors) },
+      channels: accountConnectorsStatus(accountConnectors),
       eacAuth: eac?.cached(),
       settings: managementSettings(stores.settings.get()),
       catalogSyncedAt: stores.settings.get().catalogSyncedAt ?? 0,
@@ -192,28 +198,56 @@ export function createManagement({ stores, runtime, channels, eac, info, onSetti
       json(res, 200, summary())
     } else if (method === 'GET' && pathname === `${PREFIX}/stats`) {
       json(res, 200, buildStats(stores.stats.get(), runtime.catalog))
-    } else if (method === 'POST' && pathname === `${PREFIX}/channels/rpc` && channels) {
-      // 渠道备份导入包含多账号凭据，仍限制总大小，但不能套设置表单的 16KB。
-      const body = await readBody(req, 8 * 1024 * 1024)
-      if (body.method === 'gateway.getEnabled' || body.method === 'gateway.setEnabled') {
-        if (body.method === 'gateway.setEnabled') {
-          if (typeof body.payload?.enabled !== 'boolean') throw fail(400, 'enabled 必须是布尔值')
-          persist({ enabled: body.payload.enabled })
+    } else if (pathname === `${PREFIX}/channels/rpc`) {
+      throw fail(410, '旧账号管理入口已移除，请通过独立账号连接扩展管理。', 'LEGACY_CHANNELS_REMOVED')
+    } else if (pathname === CONNECTORS || pathname.startsWith(CONNECTORS + '/')) {
+      const action = pathname.slice(CONNECTORS.length)
+      if (method === 'GET' && action === '') {
+        json(res, 200, accountConnectorsStatus(accountConnectors))
+        return
+      }
+      if (method !== 'POST') throw fail(405, '扩展操作需要 POST')
+      if (!['/enable', '/disable', '/install', '/uninstall', '/rpc'].includes(action)) throw fail(404, '扩展管理接口不存在')
+      if (!accountConnectors) throw fail(503, '账号连接扩展宿主不可用', 'EXTENSION_UNAVAILABLE')
+      const body = await readBody(req, action === '/rpc' ? 1024 * 1024 : MAX_BODY_BYTES)
+      if (action === '/rpc') {
+        const state = accountConnectorsStatus(accountConnectors)
+        if (!state.installed || !state.enabled || state.state !== 'ready') {
+          throw fail(503, '账号连接扩展未安装、未启用或尚未连接，请在扩展页检查状态。', 'EXTENSION_UNAVAILABLE')
         }
-        const base = new URL(info().baseUrl)
-        json(res, 200, { ok: true, value: {
-          enabled: stores.settings.get().enabled !== false, running: stores.settings.get().enabled !== false,
-          blockedByEnv: false, address: { host: base.hostname, port: Number(base.port) },
-          apiKey: { value: stores.settings.get().forwardKey, path: `${info().dataDir}/settings.json`, fromEnv: false },
-          models: runtime.publicModelRows(), modelsSource: 'catalog',
-        } })
-      } else {
+        if (typeof body.method !== 'string' || !body.method.trim() || body.method.length > 160 ||
+            Object.keys(body).some(key => !['method', 'payload'].includes(key)) ||
+            (body.payload !== undefined && (body.payload === null || typeof body.payload !== 'object' || Array.isArray(body.payload)))) {
+          throw fail(400, '扩展管理请求需要有效的 method 和对象 payload')
+        }
+        // 导出凭据必须由扩展显式写入本机文件；通用 RPC 不允许返回凭据备份。
+        if (body.method === 'backup.export') throw fail(403, '账号备份请从扩展管理页显式导出到本机文件。', 'LOCAL_EXPORT_REQUIRED')
         const controller = new AbortController()
         const abort = () => controller.abort()
         res.once('close', abort)
-        try { json(res, 200, await channels.rpc(body, controller.signal)) }
-        finally { res.removeListener('close', abort) }
+        try {
+          const result = await accountConnectors.rpc({ ...body, payload: body.payload ?? {} }, controller.signal)
+          if (!controller.signal.aborted && !closed && !res.destroyed) json(res, 200, result)
+        } finally { res.removeListener('close', abort) }
+        return
       }
+      if (action === '/install') {
+        if (Object.keys(body).some(key => !['path', 'trustDevelopment'].includes(key)) ||
+            typeof body.path !== 'string' || !path.isAbsolute(body.path) || (process.platform === 'win32' && !/^[A-Za-z]:[\\/]/.test(body.path)) || /^[\\/]{2}/.test(body.path) || body.path.length > 4096) {
+          throw fail(400, '请提供本机扩展目录的绝对路径')
+        }
+        if (body.trustDevelopment !== true) throw fail(400, '导入本地开发扩展前，必须明确确认信任来源')
+        await accountConnectors.installFromDirectory(body.path, { trustDevelopment: true })
+      } else if (action === '/uninstall') {
+        if (Object.keys(body).some(key => key !== 'deleteData') || body.deleteData !== false) {
+          throw fail(400, '卸载必须明确使用 deleteData:false，保留扩展数据')
+        }
+        await accountConnectors.uninstall({ deleteData: false })
+      } else {
+        if (Object.keys(body).length !== 0) throw fail(400, '启用或停用不接受额外参数')
+        await accountConnectors[action === '/enable' ? 'enable' : 'disable']()
+      }
+      if (!closed && !res.destroyed) json(res, 200, { accountConnectors: accountConnectorsStatus(accountConnectors) })
     } else if (eac && pathname.startsWith(`${PREFIX}/eac/`)) {
       const params = new URL(req.url, 'http://localhost').searchParams
       const route = pathname.slice(PREFIX.length)
@@ -269,13 +303,45 @@ export function createManagement({ stores, runtime, channels, eac, info, onSetti
           model: body.model, signal: controller.signal,
           openAi: { messages: [{ role: 'user', content: 'Reply with OK.' }], max_tokens: 64 },
         })
+        if (controller.signal.aborted) throw fail(499, '模型测试已取消')
         if (outcome.error) throw fail(502, outcome.error)
+        if (typeof outcome.text !== 'string' || !outcome.text.trim()) throw fail(502, '上游没有返回可见正文，尚未确认模型可用')
         json(res, 200, { ok: true, text: outcome.text.slice(0, 2000), latencyMs: Date.now() - started })
       } finally {
         clearTimeout(deadline)
         res.removeListener('close', abort)
       }
     } else throw fail(404, '管理接口不存在')
+  }
+
+  async function serveExtensionUi(req, res, pathname) {
+    if (!authenticated(req)) throw fail(401, '请先登录核心管理页面')
+    if (req.method !== 'GET' && req.method !== 'HEAD') throw fail(405, '扩展资源仅支持 GET 或 HEAD')
+    if (pathname === EXTENSION_UI) { res.writeHead(308, { ...SECURITY_HEADERS, location: EXTENSION_UI + '/' }); res.end(); return }
+    let relative
+    try { relative = decodeURIComponent(pathname.slice(EXTENSION_UI.length)).replace(/^\//, '') } catch { throw fail(400, '扩展资源路径无效') }
+    if (relative.includes('\\') || relative.includes('%') || relative.includes('\0') || relative.split('/').some(part => part === '..' || part === '.')) {
+      throw fail(400, '扩展资源路径无效')
+    }
+    const state = accountConnectorsStatus(accountConnectors)
+    if (!state.installed || !state.enabled || state.state !== 'ready') {
+      if (relative && relative !== 'index.html') throw fail(state.installed ? 503 : 404, '扩展资源不可用', 'EXTENSION_UNAVAILABLE')
+      const body = Buffer.from('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>账号连接扩展 · OFM</title></head><body><main><h1>账号连接扩展</h1><p>扩展尚未连接。OFM 基础功能可以继续使用。</p><p>请回到核心管理页查看安装、启用及故障说明。扩展由你自愿导入并启用。</p><a href="/?page=extensions">打开扩展安装指引</a></main></body></html>')
+      res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'text/html; charset=utf-8' })
+      res.end(req.method === 'HEAD' ? undefined : body)
+      return
+    }
+    if (typeof accountConnectors.readUiAsset !== 'function') throw fail(503, '扩展尚未提供已验证的管理界面资源', 'EXTENSION_UI_UNAVAILABLE')
+    const asset = await accountConnectors.readUiAsset(!relative || relative === 'index.html' ? 'index.html' : relative.startsWith('web/') ? relative : 'web/' + relative)
+    const current = accountConnectorsStatus(accountConnectors)
+    if (closed || !current.installed || !current.enabled || current.state !== 'ready') throw fail(503, '扩展已停止', 'EXTENSION_UNAVAILABLE')
+    if (!asset) throw fail(404, '扩展资源未在已安装清单中声明')
+    if (!(Buffer.isBuffer(asset.bytes) || asset.bytes instanceof Uint8Array) || typeof asset.path !== 'string') {
+      throw fail(503, '扩展资源无效', 'EXTENSION_UI_UNAVAILABLE')
+    }
+    const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2' }
+    res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': types[path.extname(asset.path).toLowerCase()] ?? 'application/octet-stream' })
+    res.end(req.method === 'HEAD' ? undefined : asset.bytes)
   }
 
   return {
@@ -285,7 +351,9 @@ export function createManagement({ stores, runtime, channels, eac, info, onSetti
       const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
       const asset = assets.get(pathname)
       const isApi = pathname === PREFIX || pathname.startsWith(`${PREFIX}/`)
-      if (!asset && !isApi) return false
+      const isExtensionUi = pathname === EXTENSION_UI || pathname.startsWith(EXTENSION_UI + '/')
+      const isExtensionAlias = pathname === EXTENSION_ALIAS || pathname.startsWith(EXTENSION_ALIAS + '/')
+      if (!asset && !isApi && !isExtensionUi && !isExtensionAlias) return false
       // 不接受插件专用 dsh-app Referer；独立管理只允许本页面的 HTTP 来源。
       const referer = req.headers.referer
       const origin = req.headers.origin
@@ -294,16 +362,20 @@ export function createManagement({ stores, runtime, channels, eac, info, onSetti
       ))
       if (closed || !cookieName) json(res, 503, { error: '服务正在停止或启动' })
       else if (malformedSource || structuralRejection(req) !== undefined) json(res, 403, { error: '管理接口仅允许本机同源访问' })
-      else if (asset) {
+      else if (isExtensionAlias) {
+        if (req.method !== 'GET' && req.method !== 'HEAD') json(res, 405, { error: '扩展入口仅支持 GET 或 HEAD' })
+        else { res.writeHead(302, { ...SECURITY_HEADERS, location: EXTENSION_UI + (pathname.slice(EXTENSION_ALIAS.length) || '/') }); res.end() }
+      } else if (asset) {
         if (req.method !== 'GET' && req.method !== 'HEAD') json(res, 405, { error: '资源仅支持 GET 或 HEAD' })
         else {
           res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': asset.type })
           res.end(req.method === 'HEAD' ? undefined : asset.body)
         }
       } else {
-        try { await route(req, res, pathname) } catch (error) {
+        try { if (isExtensionUi) await serveExtensionUi(req, res, pathname); else await route(req, res, pathname) } catch (error) {
           if (!res.destroyed && !res.headersSent) json(res, error.statusCode ?? 500, {
             error: error.statusCode ? error.message : '管理操作失败，请查看服务日志',
+            ...(typeof error.code === 'string' ? { code: error.code } : {}),
           })
         }
       }

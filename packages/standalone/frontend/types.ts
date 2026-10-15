@@ -1,4 +1,17 @@
-export type Page = 'overview' | 'models' | 'usage' | 'channels' | 'eac' | 'settings' | 'connection'
+export type Page = 'overview' | 'models' | 'usage' | 'extensions' | 'eac' | 'settings' | 'connection' | 'upgrade'
+export interface AccountConnectorsStatus {
+  id: 'ofm.account-connectors'
+  state: 'not-installed' | 'disabled' | 'starting' | 'ready' | 'failed' | 'incompatible' | 'stopping' | string
+  installed: boolean
+  enabled: boolean
+  version: string | null
+  protocolVersion: number | null
+  providerCount: number
+  modelCount: number
+  managementTarget: string
+  error?: string
+}
+export type ExtensionAction = 'install' | 'enable' | 'disable' | 'uninstall'
 export interface Model {
   id: string
   name: string
@@ -9,6 +22,7 @@ export interface Model {
   contextWindow?: number
   maxOutput?: number
   availability?: string
+  detail?: string
   ttftMs?: number | null
 }
 export interface ModelTestResult { ok: boolean; text: string; latencyMs: number }
@@ -28,7 +42,8 @@ export interface Summary {
   automaticRefresh: boolean
   catalogSyncedAt: number
   settings: ServiceSettings
-  channels: { state: string; error?: string }
+  extensions: { accountConnectors: AccountConnectorsStatus }
+  channels?: AccountConnectorsStatus
   eacAuth?: { local?: boolean; authorized?: boolean; login?: string }
   catalog: Model[]
 }
@@ -61,8 +76,9 @@ export interface UsageModel {
 }
 export interface Snapshot { summary: Summary; stats: Stats }
 export interface Host {
-  navigate(page: Page): void
+  navigate(page: Page | 'channels'): void
   refresh(): Promise<void>
+  manageAccountConnectors(action: ExtensionAction, body?: Record<string, unknown>, signal?: AbortSignal): Promise<AccountConnectorsStatus>
   copy(value: string): Promise<void>
   getApiKey(): Promise<string>
   rotateKey(): Promise<string>

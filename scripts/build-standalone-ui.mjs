@@ -14,7 +14,7 @@ if (assets.some(name => !/^[\w-]+\.(js|css)$/.test(name))) throw new Error('构�
 files.set('assets.json', JSON.stringify(assets, null, 2) + '\n')
 const directory = new URL('../packages/standalone/web/', import.meta.url)
 const manifest = new URL('assets.json', directory)
-const previous = fs.existsSync(manifest) ? JSON.parse(fs.readFileSync(manifest, 'utf8')) : ['channels.js', 'channels.css']
+const previous = fs.readdirSync(directory).filter(name => /^[\w-]+\.(js|css)$/.test(name))
 for (const [name, content] of files) {
   const file = new URL(name, directory)
   if (process.argv.includes('--check')) {
@@ -22,6 +22,11 @@ for (const [name, content] of files) {
       throw new Error(`独立端资源需要重新生成：${name}`)
     }
   } else fs.writeFileSync(file, content)
+}
+if (process.argv.includes('--check')) {
+  const expected = new Set(files.keys())
+  const extra = previous.filter(name => !expected.has(name))
+  if (extra.length) throw new Error('独立端目录还含旧构建资源：' + extra.join(', '))
 }
 if (!process.argv.includes('--check')) {
   for (const name of previous) {

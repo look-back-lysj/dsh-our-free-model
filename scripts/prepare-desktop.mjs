@@ -24,12 +24,15 @@ export function stageDesktopService(destination) {
     }
   }
   tree('src', file => /\.(js|json)$/.test(file))
-  for (const name of ['cli', 'service', 'management', 'login-terminal', 'eac']) copy(`packages/standalone/${name}.mjs`)
-  tree('packages/standalone/channels', file => file.endsWith('.mjs'))
-  tree('packages/standalone/web', file => /\.(html|js|css|json)$/.test(file))
+  for (const name of ['cli', 'service', 'management', 'login-terminal', 'eac', 'extensions']) copy(`packages/standalone/${name}.mjs`)
+  const assets = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'packages/standalone/web/assets.json'), 'utf8'))
+  for (const name of ['index.html', 'assets.json', ...assets]) {
+    if (!/^[\w-]+\.(html|js|css|json)$/.test(name)) throw new Error('网页资源清单包含不安全路径')
+    copy('packages/standalone/web/' + name)
+  }
+  if (fs.existsSync(path.join(repositoryRoot, 'packages/standalone/web/splash.html'))) copy('packages/standalone/web/splash.html')
   copy('packages/standalone/package.json')
   copy('packages/desktop/service-host.mjs')
-  for (const name of ['qoder-auth-wasm.wasm', 'LICENSE', 'NOTICE.md']) copy(`vendor/channel-pack/${name}`)
   copy('LICENSE')
   copy('scripts/standalone-third-party.txt', 'THIRD_PARTY_NOTICES.txt')
   fs.writeFileSync(path.join(destination, 'package.json'), JSON.stringify({ private: true, type: 'module' }) + '\n')

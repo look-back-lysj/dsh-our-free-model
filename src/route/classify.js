@@ -177,6 +177,7 @@ const CODE_VERDICTS = Object.freeze({
   // on another candidate, so nothing is benched and the router must not rotate.
   region_blocked: Object.freeze({ kind: FAILURE_KIND.UNAVAILABLE, scope: FAILURE_SCOPE.PROVIDER, retryable: false, cooldownMs: 0 }),
   authorization_required: Object.freeze({ kind: FAILURE_KIND.AUTH, scope: FAILURE_SCOPE.PROVIDER, retryable: false, cooldownMs: 0 }),
+  access_restricted: Object.freeze({ kind: FAILURE_KIND.PERMISSION, scope: FAILURE_SCOPE.PROVIDER, retryable: false, cooldownMs: 0 }),
   lane_locked: Object.freeze({ kind: FAILURE_KIND.UNAVAILABLE, scope: FAILURE_SCOPE.PROVIDER, retryable: false, cooldownMs: 0 }),
 })
 
@@ -473,7 +474,10 @@ export function classifyFailure({ status, code, message, body, retryAfterMs, bac
   const text = failureText(message, body, code)
   const codes = failureCodes(code, body)
   const level = normalizeLevel(backoffLevel)
-  const matched = contextWindowVerdict(codes, text)
+  // A named client-policy refusal must not become account rotation because
+  // its explanation happens to contain a credential or rate-limit phrase.
+  const matched = (codes.some(code => code === 'access_restricted' || code === 'lane_locked') ? codeVerdict(codes, level) : null)
+    ?? contextWindowVerdict(codes, text)
     ?? textRuleVerdict(text, level)
     ?? codeVerdict(codes, level)
     ?? statusRuleVerdict(normalizedStatus, level)

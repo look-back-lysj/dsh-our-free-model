@@ -478,7 +478,9 @@ export async function * readStream(lines, wire, renameMap, now = () => Date.now(
       if (!text.startsWith('{')) continue
       let payload
       try { payload = JSON.parse(text) } catch { continue }
-      if (payload.type === 'error' || payload.error) {
+      const nestedFailure = payload.type === 'response.failed' || payload.response?.status === 'failed'
+        ? payload.response?.error : undefined
+      if (payload.type === 'error' || payload.error || nestedFailure) {
         // Classify an in-stream refusal exactly as an error *envelope* is
         // classified, because everything downstream decides off `code`. This throw
         // used to carry only `llmCode`, which nothing reads: the failure reached
@@ -486,8 +488,8 @@ export async function * readStream(lines, wire, renameMap, now = () => Date.now(
         // so the harness re-sent a turn whose partial answer had already been
         // streamed, and a mid-turn geography refusal never reached the re-probe
         // that watches for `CODE.region`.
-        const failure = payload.error ?? payload
-        const classified = classifyFailure(undefined, payload)
+        const failure = payload.error ?? nestedFailure ?? payload
+        const classified = classifyFailure(undefined, nestedFailure ? { error: failure } : payload)
         if (typeof failure.message !== 'string') classified.message = 'upstream error'
         throw Object.assign(classified, { upstream: payload })
       }

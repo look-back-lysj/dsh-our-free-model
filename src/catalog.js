@@ -11,10 +11,12 @@
  * @module src/catalog.js
  */
 
-import { baseModelId, isResponsesModel } from './upstream.js'
+import { baseModelId, wireFor } from './upstream.js'
 
 /** Ids that are free-tier without carrying the `-free` suffix. */
-const ALWAYS_FREE = new Set(['union-alpha', 'space-bunny-free'])
+const ALWAYS_FREE = new Set(['union-alpha', 'space-bunny-free', 'big-pickle'])
+// Official Console Models describes this free model as SystemOne, not chat.
+const STRUCTURED_ONLY_MODELS = new Set(['jev-1.13-free'])
 
 /**
  * Local capability baseline. `contextWindow`/`maxOutput` are the provider's
@@ -36,6 +38,7 @@ export const CAPABILITIES = [
 
 /** Human-facing display names, so a raw upstream id never reaches the picker. */
 const DISPLAY_NAMES = {
+  'big-pickle': 'Big Pickle',
   'mimo-v2.6-flash-free': 'MiMo V2.6 Flash',
   'mimo-v2.5-free': 'MiMo V2.5',
   'muse-spark-1.3-contributor-free': 'Muse Spark 1.3',
@@ -54,7 +57,8 @@ const REGION_SENSITIVE = [/^muse.?spark/]
 
 /**
  * Is this id on the免密 lane? The gateway's listing mixes paid and free ids;
- * only these answer without a per-user key.
+ * this identifies advertised free candidates, not successful generation or
+ * permission for this client. Availability remains a separate measured state.
  */
 export function isFreeLane(modelId) {
   const base = baseModelId(modelId)
@@ -102,13 +106,13 @@ export function buildCatalog(ids) {
     const id = String(raw ?? '').trim()
     if (id === '' || !isFreeLane(id)) continue
     const base = baseModelId(id)
-    if (seen.has(base)) continue
+    if (seen.has(base) || STRUCTURED_ONLY_MODELS.has(base)) continue
     seen.add(base)
     const caps = capabilitiesFor(base)
     entries.push({
       id: base,
       name: displayModelName(base),
-      wire: isResponsesModel(base) ? 'responses' : 'chat',
+      wire: wireFor(base),
       vision: caps.vision === true,
       reasoning: caps.reasoning !== false,
       contextWindow: number(caps.contextWindow) ?? 131072,

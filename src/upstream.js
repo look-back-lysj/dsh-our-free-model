@@ -94,57 +94,63 @@ export function mintRequestId(timestamp = Date.now()) {
 }
 
 const SESSION_MAP_FILE = 'session-map.json'
-let sessions
+// Each runtime owns a data directory. Keep maps apart even when DSH and two
+// standalone services live in the same process; none may borrow another's quota.
+const sessionMaps = new Map()
 
-function sessionStorePath() {
-  try { return path.join(path.resolve(resolveDshHome(), DATA_DIR_NAME), SESSION_MAP_FILE) } catch { return undefined }
+function sessionStorePath(dataDir) {
+  if (dataDir !== undefined) {
+    if (typeof dataDir !== 'string' || !path.isAbsolute(dataDir)) throw new TypeError('session dataDir must be an absolute path')
+    return path.join(path.resolve(dataDir), SESSION_MAP_FILE)
+  }
+  return path.join(path.resolve(resolveDshHome(), DATA_DIR_NAME), SESSION_MAP_FILE)
 }
 
-function loadSessions() {
-  if (sessions !== undefined) return sessions
-  sessions = new Map()
+function loadSessions(file) {
+  if (sessionMaps.has(file)) return sessionMaps.get(file)
+  const sessions = new Map()
   try {
-    const file = sessionStorePath()
-    if (file === undefined) return sessions
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
     for (const [seed, id] of Object.entries(parsed?.sessions ?? {})) {
       if (typeof id === 'string' && SESSION_RE.test(id)) sessions.set(seed, id)
     }
   } catch { /* first run or unreadable store: start empty */ }
+  sessionMaps.set(file, sessions)
   return sessions
 }
 
-function rememberSession(seed, id) {
-  loadSessions().set(seed, id)
+function rememberSession(file, sessions, seed, id) {
+  sessions.set(seed, id)
   try {
-    const file = sessionStorePath()
-    if (file === undefined) return
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    const temp = `${file}.tmp`
-    fs.writeFileSync(temp, JSON.stringify({ version: 1, at: Date.now(), sessions: Object.fromEntries(sessions) }, undefined, 2))
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    const temp = file + '.tmp'
+    fs.writeFileSync(temp, JSON.stringify({ version: 1, at: Date.now(), sessions: Object.fromEntries(sessions) }, undefined, 2), { mode: 0o600 })
     fs.renameSync(temp, file)
   } catch { /* non-fatal: the id still works, it just will not survive a restart */ }
 }
 
+/** Bind persistent mappings to the product's own data directory. */
+export function createSessionMapper({ dataDir } = {}) {
+  const file = sessionStorePath(dataDir)
+  return sessionId => {
+    if (typeof sessionId === 'string' && SESSION_RE.test(sessionId.trim())) return sessionId.trim()
+    const seed = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : 'global'
+    const sessions = loadSessions(file)
+    const remembered = sessions.get(seed)
+    if (remembered !== undefined) return remembered
+    const minted = mintSessionId()
+    rememberSession(file, sessions, seed, minted)
+    return minted
+  }
+}
+
 /**
- * Map one downstream conversation onto one stable upstream session.
- *
- * Free-tier quota is accounted per session, so a fresh id per request exhausts
- * it and surfaces as 429 with growing retry-after. The gateway also checks the
- * id's *shape*: the twelve hex digits must be the time encoding that
- * `mintSessionId()` produces. A sha256 digest, or any other random hex, is
- * refused with 403 FreeTierError even when every other header is right
- * (measured 2026-10-14). Mint once per conversation and cache it, which keeps
- * both properties: one stable session per conversation, and the canonical shape.
+ * Preserve one canonical upstream session per downstream conversation across
+ * restarts. Direct adapters retain the DSH default; product runtimes inject
+ * a mapper bound to their explicit dataDir.
  */
 export function sessionForConversation(sessionId) {
-  if (typeof sessionId === 'string' && SESSION_RE.test(sessionId.trim())) return sessionId.trim()
-  const seed = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : 'global'
-  const remembered = loadSessions().get(seed)
-  if (remembered !== undefined) return remembered
-  const minted = mintSessionId()
-  rememberSession(seed, minted)
-  return minted
+  return createSessionMapper()(sessionId)
 }
 
 /** Stable per-turn request id: retries of the same turn share it. */

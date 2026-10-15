@@ -64,7 +64,7 @@ const MODELS = [
   'mimo-v2.6-flash-free', 'mimo-v2.5-free', 'muse-spark-1.3-contributor-free',
   'muse-spark-1.2-contributor-free', 'nemotron-3-ultra-free', 'nemotron-3.5-lightning-free',
   'ling-3.0-flash-fin-free', 'space-bunny-free', 'union-alpha', 'deepseek-v4-flash-free',
-  'jev-1.13-free', 'future-provider-free',
+  'fixture-chat-free', 'future-provider-free',
 ]
 const CATALOG = buildCatalog(MODELS)
 const REPRESENTATIVES = ['mimo-v2.6-flash-free', 'muse-spark-1.3-contributor-free', 'union-alpha']

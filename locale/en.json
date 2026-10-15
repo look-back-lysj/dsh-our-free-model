@@ -2,5 +2,22 @@
   "meta": {
     "title": "Our Free Model",
     "description": "Free no-key models inside DeepSeek Harness: a roster that follows upstream, live regional availability, genuinely enforced thinking levels, a token dashboard, and an OpenAI-compatible local forward port."
+  },
+  "extensions": {
+    "accountConnectors": {
+      "title": "Account connectors",
+      "description": "Install and enable it separately to manage product accounts in its own plugin. OFM free models, EAC and official APIs remain available.",
+      "packageName": "dsh-ofm-account-connectors",
+      "installation": "The extension is in local development and has not been published. There is no marketplace download address. Use a local development package with a known source and verify its publisher, version and protocol.",
+      "states": {
+        "notinstalled": "Not installed",
+        "installed": "Installed · awaiting enable",
+        "disabled": "Disabled",
+        "ready": "Connected",
+        "failed": "Connection failed",
+        "incompatible": "Incompatible version",
+        "conflict": "Instance or model conflict"
+      }
+    }
   }
 }

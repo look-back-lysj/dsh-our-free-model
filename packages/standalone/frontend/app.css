@@ -125,7 +125,7 @@ main { flex: 1; min-width: 0; }
 .console-breadcrumb strong { font-weight: 500; color: var(--ink-soft); }
 .console-topbar-status { font-size: 11px; }
 .topbar-divider { height: 13px; width: 1px; background: var(--line); margin: 0 4px; }
-.page { max-width: 1440px; margin: 0 auto; padding: 30px 32px; }
+.page { min-width: 0; max-width: 1440px; margin: 0 auto; padding: 30px 32px; }
 .dashboard-heading, .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 25px; }
 .heading-eyebrow, .eyebrow { display: block; color: var(--dsw-alias-label-tertiary); font-size: 10px; margin-bottom: 7px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
 .dashboard-heading p, .page-heading p { font-size: 13px; margin-top: 7px; }
@@ -5224,3 +5224,26 @@ input:disabled, select:disabled, textarea:disabled, .ui-input:disabled {
   margin-left: auto !important;
 }
 /* ==== 夜主题·工作空间卡片修复 END ==== */
+
+/* API 字段可以收缩；浅色 flex 页面受实际可用宽度约束。 */
+:root:not([data-theme="dark"]) .app-shell main > section.page {
+  min-width: 0; max-width: min(100%, 1440px);
+}
+.connection-browser, .connection-browser .copy-field,
+.connection-browser .connection-card-heading { min-width: 0; }
+.connection-browser .copy-field > .cx-field {
+  display: flex; align-items: center; gap: 8px;
+  flex: 1 1 240px; min-width: 0; max-width: 100%;
+}
+.connection-browser .cx-field > input {
+  flex: 1 1 0; width: 0; min-width: 0; max-width: 100%;
+}
+.connection-browser .connection-danger { flex-wrap: wrap; }
+.connection-browser .ui-button { max-width: 100%; height: auto; white-space: normal; }
+.connection-browser p, .connection-browser h2,
+.connection-browser pre { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .app-shell main > section.page { width: 100%; min-width: 0; }
+  .connection-browser .copy-field > .cx-field { flex-basis: 100%; }
+  .connection-browser .connection-card-heading { flex-wrap: wrap; }
+}

@@ -15,28 +15,25 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 export const repositoryRoot = fileURLToPath(new URL('..', import.meta.url))
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex')
 const json = value => `${JSON.stringify(value, null, 2)}\n`
-const sourceFiles = [
-  'LICENSE',
-  'scripts/standalone-third-party.txt',
-  'packages/standalone/package.json',
-  'packages/standalone/cli.mjs',
-  'packages/standalone/service.mjs',
-  'packages/standalone/management.mjs',
-  'packages/standalone/login-terminal.mjs',
-  'packages/standalone/eac.mjs',
-  ...['business', 'contracts', 'credentials', 'images', 'runtime', 'worker']
-    .map(name => `packages/standalone/channels/${name}.mjs`),
-  ...['index.html', 'app.js', 'app.css', 'channels.js', 'channels.css']
-    .map(name => `packages/standalone/web/${name}`),
-  ...['adapter', 'catalog', 'channel', 'eac', 'eac-login', 'eac-user', 'effort',
-    'egress', 'forward', 'http', 'kilo', 'messages', 'probe', 'recovery',
-    'store', 'stream', 'trust', 'upstream', 'vault', 'vault-data', 'vault-anchor']
-    .map(name => `src/${name}.js`),
-  ...['completion', 'runtime', 'stats'].map(name => `src/core/${name}.js`),
-  'vendor/channel-pack/qoder-auth-wasm.wasm',
-  'vendor/channel-pack/LICENSE',
-  'vendor/channel-pack/NOTICE.md',
-].sort()
+export function coreStandaloneSourceFiles() {
+  const files = ['LICENSE', 'scripts/standalone-third-party.txt', 'packages/standalone/package.json',
+    ...['cli', 'service', 'management', 'login-terminal', 'eac', 'extensions'].map(name => 'packages/standalone/' + name + '.mjs')]
+  const walk = directory => {
+    for (const item of fs.readdirSync(path.join(repositoryRoot, directory), { withFileTypes: true })) {
+      const relative = directory + '/' + item.name
+      if (item.isDirectory()) walk(relative)
+      else if (item.isFile() && /\.(js|json)$/.test(relative)) files.push(relative)
+    }
+  }
+  walk('src')
+  const assets = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'packages/standalone/web/assets.json'), 'utf8'))
+  for (const name of ['index.html', 'assets.json', ...assets]) {
+    if (!/^[\w-]+\.(html|js|css|json)$/.test(name)) throw new Error('Invalid standalone web asset path')
+    files.push('packages/standalone/web/' + name)
+  }
+  return [...new Set(files)].sort()
+}
+const sourceFiles = coreStandaloneSourceFiles()
 
 function regularBytes(file) {
   if (!fs.lstatSync(file).isFile()) throw new Error(`Only regular files can be packaged: ${file}`)
@@ -125,7 +122,7 @@ exec "$ofm_package_dir/runtime/node" "$ofm_package_dir/packages/standalone/cli.m
 仅验证构建机器的 macOS 架构；未验证其它 macOS 版本、Intel Mac 或 Windows/Linux。
 本包不会设置系统代理，也不会修改其它客户端的接入配置。
 完整性记录见 package-manifest.json；该记录不是签名或发布授权。
-许可证见 LICENSE、vendor/channel-pack/、THIRD_PARTY_NOTICES.txt 和 runtime/LICENSE。
+许可证见 LICENSE、THIRD_PARTY_NOTICES.txt 和 runtime/LICENSE。账号连接扩展由用户单独安装，其来源和许可证随独立扩展包提供。
 `)
     const manifest = {
       format: 'ofm-local-package/v1', purpose: 'development-validation-only',

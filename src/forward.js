@@ -311,7 +311,8 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
       if (!res.headersSent) {
         const status = Number(error?.statusCode)
         const code = Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500
-        openAiError(res, code, code === 500 ? 'server_error' : 'invalid_request_error', String(error?.message ?? error))
+        const extensionCode = typeof error?.code === 'string' && /^EXTENSION_[A-Z_]{1,60}$/.test(error.code) ? error.code : undefined
+        openAiError(res, code, code === 500 ? 'server_error' : 'invalid_request_error', String(error?.message ?? error), extensionCode ?? null)
       } else {
         res.end()
       }

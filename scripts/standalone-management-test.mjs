@@ -11,6 +11,7 @@ const dataDir = path.join(scratch, 'data')
 const model = 'mimo-v2.6-flash-free'
 const kilo = 'nvidia/nemotron-3.5-lightning:free'
 let calls = 0
+let replyText = 'OK'
 let holdNextCall = false
 let notifyCall
 let notifyClosed
@@ -32,7 +33,7 @@ const upstream = http.createServer((req, res) => {
       }
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       res.end([
-        `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'OK' } }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: replyText } }] })}\n\n`,
         `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 11, completion_tokens: 7 } })}\n\n`,
         'data: [DONE]\n\n',
       ].join(''))
@@ -117,7 +118,8 @@ try {
     assert.ok(!body.includes(key))
     const manifest = JSON.parse(fs.readFileSync(new URL('../packages/standalone/web/assets.json', import.meta.url), 'utf8'))
     assert.ok(manifest.includes('app.js') && manifest.includes('app.css'))
-    assert.ok(manifest.some(name => /^channels-.+\.js$/.test(name)))
+    assert.ok(manifest.some(name => /^eac-.+\.js$/.test(name)))
+    assert.ok(!manifest.some(name => /^channels-.+\.js$/.test(name)))
     for (const asset of manifest) {
       const response = await request(`/assets/${asset}`, { cookie: '' })
       assert.equal(response.status, 200, asset)
@@ -250,6 +252,11 @@ try {
     assert.equal(stats.turns, 1)
     assert.equal(stats.grand.input, 11)
     assert.equal(stats.grand.output, 7)
+  })
+  await check('单模型测试没有可见正文时不能误报成功', async () => {
+    replyText = ''
+    try { const response = await request('/api/management/models/test', { body: { model } }); assert.equal(response.status, 502); assert.match((await response.json()).error, /正文|empty response/) }
+    finally { replyText = 'OK' }
   })
   await check('取消单模型测试会关闭真实上游请求且管理会话仍可使用', async () => {
     const started = new Promise(resolve => { notifyCall = resolve })

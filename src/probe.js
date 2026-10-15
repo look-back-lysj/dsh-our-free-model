@@ -15,7 +15,8 @@
  */
 
 import { applyFingerprint, endpointFor, mintRequestId, sessionForConversation, wireFor } from './upstream.js'
-import { CODE, postStreamed } from './http.js'
+import { CODE, UpstreamError, postStreamed } from './http.js'
+import { readStream } from './stream.js'
 import { egressFetch } from './egress.js'
 
 /** Public-echo sources, tried in order; any one answering is enough. */
@@ -29,6 +30,7 @@ const ECHO_SOURCES = [
 export const STATE = {
   available: 'available',
   regionBlocked: 'region-blocked',
+  accessRestricted: 'access-restricted',
   unavailable: 'unavailable',
   throttled: 'throttled',
   unknown: 'unknown',
@@ -46,56 +48,58 @@ const PING_PROMPT = 'ping'
  * @param {number} [options.timeoutMs]
  * @returns {Promise<{state:string, detail?:string, latencyMs:number, ttftMs?:number}>}
  */
-export async function probeModel(model, { attributionUserAgent, signal, timeoutMs = 45000 } = {}) {
+export async function probeModel(model, { attributionUserAgent, sessionMapper = sessionForConversation, signal, timeoutMs = 45000 } = {}) {
   const started = Date.now()
-  const session = sessionForConversation('probe:our-free-model')
+  const session = sessionMapper('probe:our-free-model')
   const wire = wireFor(model.id)
   const body = buildPing(model.id, wire)
-  applyFingerprint(body, wire === 'responses')
+  applyFingerprint(body, wire === 'messages' ? 'claude' : wire === 'responses')
 
-  let firstDelta
-  let streamError
+  // A ping is deliberately small. Bound a malformed upstream before buffering
+  // its frames, then use the same protocol parser as real turns.
+  const frames = []
+  let bytes = 0, timedOut = false
+  const deadline = new AbortController()
+  const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.max(1, Math.trunc(timeoutMs)) : 45000
+  const timer = setTimeout(() => { timedOut = true; deadline.abort(new UpstreamError('模型探测已超时', CODE.timeout)) }, budget)
+  timer.unref?.()
+  const probeSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal
   try {
     await postStreamed({
-      path: endpointFor(model.id),
-      body,
-      session,
-      requestId: mintRequestId(),
-      attributionUserAgent,
-      signal,
-      timeoutMs,
+      path: endpointFor(model.id), body, session, requestId: mintRequestId(),
+      attributionUserAgent, signal: probeSignal, timeoutMs: budget,
       onData: payload => {
-        // The lane answers some refusals inside a 200 stream — a `{"type":
-        // "error"}` or `{"error": …}` frame arrives where the deltas were
-        // expected (src/stream.js classifies the same frames for real turns).
-        // Reading only "did a delta look like a delta" called such a stream
-        // available, and a model that fails every honest turn sat in the picker
-        // with a green badge.
-        if (streamError === undefined && /"(?:type"\s*:\s*"error"|"error"\s*:)/.test(payload)) {
-          try {
-            const parsed = JSON.parse(payload)
-            const failure = parsed?.error ?? (parsed?.type === 'error' ? parsed : undefined)
-            if (failure !== undefined && failure !== null) {
-              streamError = typeof failure.message === 'string' ? failure.message : 'upstream error'
-              return
-            }
-          } catch { /* not JSON the lane emits; the delta regex below still runs */ }
-        }
-        if (firstDelta !== undefined) return
-        if (/"(delta|content|text|output_item)"|response\.(output_item|output_text|function_call)/.test(payload)) firstDelta = Date.now()
+        bytes += Buffer.byteLength(payload)
+        if (bytes > 1024 * 1024 || frames.length >= 4096) throw new UpstreamError('探测响应超过大小限制，尚未确认模型可用', CODE.client)
+        frames.push({ payload, at: Date.now() })
       },
     })
-    if (streamError !== undefined) {
-      return { state: STATE.unknown, detail: streamError.slice(0, 200), latencyMs: Date.now() - started }
+    let receivedAt = started
+    async function * lines() {
+      for (const frame of frames) {
+        if (probeSignal.aborted) throw new UpstreamError(timedOut ? '模型探测已超时' : '探测已取消', timedOut ? CODE.timeout : CODE.aborted)
+        receivedAt = frame.at
+        yield frame.payload
+      }
     }
-    return { state: STATE.available, latencyMs: Date.now() - started, ttftMs: firstDelta === undefined ? undefined : firstDelta - started }
+    const reader = readStream(lines(), wire, new Map(), () => receivedAt)
+    let snapshot
+    while (true) {
+      const result = await reader.next()
+      if (result.done) { snapshot = result.value; break }
+    }
+    if (probeSignal.aborted || Date.now() - started >= budget) throw new UpstreamError(timedOut || !signal?.aborted ? '模型探测已超时' : '探测已取消', signal?.aborted ? CODE.aborted : CODE.timeout)
+    if (snapshot?.sawFinish !== true || !snapshot.answerText?.trim() || /failed|error|cancelled|canceled|content_filter/.test(snapshot.finish ?? '')) {
+      return { state: STATE.unknown, detail: '上游没有返回非空正文和正常结束，尚未确认模型可用', latencyMs: Date.now() - started }
+    }
+    return { state: STATE.available, latencyMs: Date.now() - started, ttftMs: snapshot.firstDeltaAt === undefined ? undefined : snapshot.firstDeltaAt - started }
   } catch (error) {
     return {
       state: stateOf(error),
-      detail: typeof error?.message === 'string' ? error.message.slice(0, 200) : String(error),
+      detail: timedOut ? '模型探测已超时，尚未确认模型可用' : typeof error?.message === 'string' ? error.message.slice(0, 200) : String(error),
       latencyMs: Date.now() - started,
     }
-  }
+  } finally { clearTimeout(timer) }
 }
 
 function buildPing(modelId, wire) {
@@ -151,6 +155,7 @@ const ROUTING_REFUSAL_STATUS = new Set([400, 404, 422])
 
 function stateOf(error) {
   switch (error?.code) {
+    case CODE.access: return STATE.accessRestricted
     case CODE.region: return STATE.regionBlocked
     case CODE.quota: return STATE.throttled
     // The free lane's client gate (issue #310) refuses the lane, not the model

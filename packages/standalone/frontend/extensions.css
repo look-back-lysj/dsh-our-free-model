@@ -1,0 +1,31 @@
+.extensions-page { max-width: 920px; min-width: 0; }
+.extensions-page p, .extensions-page li, .extensions-page dd, .extensions-page code, .extensions-page button, .extensions-page a { overflow-wrap: anywhere; }
+.extensions-page .dashboard-heading { align-items: flex-start; flex-wrap: wrap; }
+.extensions-page .dashboard-heading > div { flex: 1 1 280px; min-width: 0; }
+.extensions-page .dashboard-heading p { max-width: 68ch; }
+.extensions-status-card { margin-block: 20px 30px; }
+.extensions-card-heading { display: flex; align-items: flex-start; gap: 12px; }
+.extensions-card-heading > div { min-width: 0; }
+.extensions-card-heading p { margin-top: 6px; }
+.extensions-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 28px; margin-block: 22px; }
+.extensions-facts dt { color: var(--muted); font-size: 12px; }
+.extensions-facts dd { margin: 4px 0 0; font-variant-numeric: tabular-nums; }
+.extensions-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.extensions-actions .ui-button { max-width: 100%; height: auto; min-height: 36px; white-space: normal; }
+.extensions-feedback { margin-top: 14px; color: var(--success-ink); }
+.extensions-error { margin-block: 14px; color: var(--danger); }
+.extensions-uninstall { margin-top: 20px; }
+.extensions-guide { min-width: 0; }
+.extensions-guide h2 { margin-bottom: 12px; }
+.extensions-guide p, .extensions-guide ol { max-width: 70ch; }
+.extensions-guide ol { padding-inline-start: 24px; margin-block: 16px 24px; }
+.extensions-guide li + li { margin-top: 10px; }
+.extensions-guide form { display: grid; gap: 12px; }
+.extensions-guide form > label:first-child { font-weight: 600; }
+.extensions-guide input:not([type=checkbox]) { width: 100%; }
+.extensions-guide form > .ui-button { justify-self: start; }
+.extensions-trust { display: flex; align-items: flex-start; gap: 10px; }
+.extensions-trust input { flex: 0 0 auto; margin-top: 6px; accent-color: var(--green); }
+.extensions-core-note { border-top: 1px solid var(--line); margin-top: 30px; padding-top: 18px; }
+.extensions-core-note button { margin-inline-start: 8px; }
+@media (max-width: 600px) { .extensions-facts { grid-template-columns: minmax(0, 1fr); } .extensions-page .ui-button { font-size: 14px; } }

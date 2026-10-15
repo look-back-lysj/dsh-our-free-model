@@ -43,3 +43,6 @@ packages/desktop/src-tauri/.node-license-cache/
 packages/desktop/node_modules/
 
 _audit/
+
+# Isolated account extension verification data, never shipped.
+.extension-test-tmp/

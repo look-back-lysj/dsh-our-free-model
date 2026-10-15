@@ -1,0 +1,13 @@
+.upgrade-page{display:grid;gap:24px;min-width:0}
+.upgrade-version{padding:24px;min-width:0}
+.upgrade-card-heading{display:flex;align-items:center;gap:12px;color:var(--ink)}
+.upgrade-card-heading h2,.upgrade-guide h2{margin:0;font-size:17px;font-weight:650}
+.upgrade-card-heading p,.upgrade-guide p,.upgrade-guide li{color:var(--muted);line-height:1.7}
+.upgrade-card-heading p{margin:4px 0 0;font-size:13px}
+.upgrade-version-value{font-size:28px;font-weight:650;overflow-wrap:anywhere;margin:20px 0}
+.upgrade-actions{display:flex;flex-wrap:wrap;gap:10px}
+.upgrade-feedback{color:var(--muted);font-size:13px;line-height:1.65;margin:14px 0 0;min-height:1.65em;overflow-wrap:anywhere}
+.upgrade-guide{min-width:0;max-width:72ch}
+.upgrade-guide ol{padding-left:22px}
+.upgrade-guide li+li{margin-top:8px}
+@media(max-width:560px){.upgrade-version{padding:18px}.upgrade-actions{align-items:stretch;flex-direction:column}.upgrade-actions .ui-button{width:100%;white-space:normal}}
