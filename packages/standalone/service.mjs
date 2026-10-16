@@ -1,3 +1,4 @@
+import { installPairedStandalonePlugin } from '../../src/extensions/paired-update.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -21,7 +22,7 @@ export function resolveStandaloneDataDir(env = process.env, home = os.homedir())
 export async function startStandalone({
   dataDir = resolveStandaloneDataDir(), host = '127.0.0.1', port,
   logger = console, refresh = true, probe,
-  accountConnectorsFactory = createAccountConnectorsHost, eacFactory = createStandaloneEac,
+  accountConnectorsFactory = createAccountConnectorsHost, eacFactory = createStandaloneEac, pairedUpdate = true,
 } = {}) {
   if (!isLoopbackHost(host)) throw new TypeError('the standalone service binds a loopback address only')
   if (typeof dataDir !== 'string' || !path.isAbsolute(dataDir)) throw new TypeError('dataDir must be an absolute path')
@@ -67,6 +68,7 @@ export async function startStandalone({
     })
     try {
       accountConnectors = await accountConnectorsFactory({ dataDir, logger, stats: stores.stats })
+      if(pairedUpdate&&typeof accountConnectors.installFromDirectory==='function')await installPairedStandalonePlugin(accountConnectors,{dataDir})
     } catch (error) {
       logger.warn?.('账号连接扩展初始化失败；核心服务继续运行')
       accountConnectors = unavailableAccountConnectors(error)

@@ -1,0 +1,133 @@
+{
+  "handoffId": "split-20261016-paired-1",
+  "verificationDate": "2026-10-15",
+  "snapshotRecheckedDate": "2026-10-16",
+  "baseline": {
+    "version": "2.3.0",
+    "revision": "ac4c55ef5e0833bf0138846a7c5255ecbc14a07c",
+    "latestRequeriedOnUpload": false
+  },
+  "results": {
+    "core": {
+      "passedSuites": 53,
+      "totalSuites": 53
+    },
+    "connectors": {
+      "passed": 453,
+      "failed": 0,
+      "skipped": 0
+    },
+    "paired": {
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "officialHost": {
+    "scope": "Official Cordis Loader + PluginManager.installBundle + bundled pnpm + HMR, actual independent package; synthetic stored credentials; no daily profile",
+    "status": "PASS",
+    "checks": [
+      {
+        "name": "actual-manager-registered",
+        "pass": true
+      },
+      {
+        "name": "actual-hmr-registered",
+        "pass": true
+      },
+      {
+        "name": "actual-llm-and-credentials",
+        "pass": true
+      },
+      {
+        "name": "independent-service-ready",
+        "pass": true
+      },
+      {
+        "name": "independent-dependency-persisted",
+        "pass": true
+      },
+      {
+        "name": "hot-updated-core-not-replaced-by-old-dependency",
+        "pass": true
+      },
+      {
+        "name": "core-is-real-directory",
+        "pass": true
+      },
+      {
+        "name": "independent-bundle-persisted",
+        "pass": true
+      },
+      {
+        "name": "real-directory-without-link",
+        "pass": true
+      },
+      {
+        "name": "access-and-refresh-preserved",
+        "pass": true
+      },
+      {
+        "name": "original-state-retained",
+        "pass": true
+      },
+      {
+        "name": "thirteen-real-providers",
+        "pass": true
+      },
+      {
+        "name": "cold-boot-restores-independent-enabled-state",
+        "pass": true
+      },
+      {
+        "name": "cold-boot-does-not-overwrite-refreshed-token",
+        "pass": true
+      }
+    ],
+    "payloadSha256": "d6bb57d2d0580d8d7968a9e31e16625f16d299b85755521f0e9bb2ab902fbd84"
+  },
+  "ui": {
+    "evidence": "real core standalone + real imported manifest package; no fixed fake extension state",
+    "providerCount": 13,
+    "accountCount": 0,
+    "allProvidersOff": true,
+    "errors": [],
+    "mobileOverflow": false
+  },
+  "release": {
+    "formallyPublished": false,
+    "publisherKeyUnchanged": true,
+    "originalSignatureStillRequired": true
+  },
+  "limits": {
+    "realVendorLoginAndInferenceVerified": false,
+    "dailyProfileModified": false,
+    "finalWindowsInstallerRebuilt": false
+  },
+  "excerpts": [
+    {
+      "sourceLog": "core-complete-final.log",
+      "sha256": "9255888fa709ed857e79f2c3cd9134bc206a2c76e20daa78872f111ebe56d011",
+      "tail": "ok   and RTK off\r\nok   an unknown level is refused\r\nok   the local-answer switches answer\r\nok   all five on by default\r\nok   toggling one answers\r\nok   with it off\r\nok   and the rest untouched\r\nok   the client recipes answer\r\nok   naming the live port\r\nok   with a recipe per client\r\nok   including the Anthropic surface\r\nok   and the real forward key\r\n\r\naggregate-wiring: the catalog, the savers, the chain, the Anthropic surface and every new route agree\r\nok   aggregate-wiring   319 ms\r\n\r\n53/53 suites passed\r\n"
+    },
+    {
+      "sourceLog": "extension-complete-final.log",
+      "sha256": "6bc22013b8ae60fb81ab8e25bc0b15dca8a2a33fe36b52deca51bc9419235d6d",
+      "tail": "✔ consumer cancellation after usage rejects instead of turning cached usage into success (0.8594ms)\r\n✔ buffered same-chunk cancellation after block-start rejects and releases the reader without replay (0.4013ms)\r\n✔ buffered same-chunk cancellation after usage rejects and releases the reader without replay (0.2183ms)\r\n✔ buffered same-chunk cancellation after block-end rejects and releases the reader without replay (0.2273ms)\r\n✔ normal same-chunk buffered completion still finishes and releases the upstream reader (0.3818ms)\r\n✔ unknown error shape {\"code\":99999,\"message\":\"synthetic future error\"} cannot finish successfully (0.3086ms)\r\n✔ unknown error shape {\"code\":\"future-error\",\"message\":\"synthetic unfamiliar error\"} cannot finish successfully (0.2174ms)\r\n✔ unknown error shape \"malformed error JSON\" cannot finish successfully (0.2063ms)\r\n✔ 真实Worker wire握手、模型、cancel/late-id、关闭确认 (95.55ms)\r\nℹ tests 453\r\nℹ suites 0\r\nℹ pass 453\r\nℹ fail 0\r\nℹ cancelled 0\r\nℹ skipped 0\r\nℹ todo 0\r\nℹ duration_ms 31838.023\r\n"
+    },
+    {
+      "sourceLog": "paired-complete-final.log",
+      "sha256": "5c50a68bf5ebed561ed0c861469b86bc85f9942f78f29f0328ca13e961f917b9",
+      "tail": "✔ paired payload is content checked and rejects traversal or changed bytes (264.6316ms)\r\n✔ official-manager-shaped DSH install hot loads the actual independent plugin with migrated login and is idempotent (1085.2658ms)\r\n✔ manager activation failure rolls back migration and never deletes old login (863.0572ms)\r\n✔ original integrated updater accepts a signed paired release within its old 80-file/4MiB limits (2548.1501ms)\r\n✔ a running migration cannot be taken over by a second call (40.3834ms)\r\n✔ process interruption after either preparation or directory swap is recovered from the durable journal (282.7911ms)\r\n✔ late host services start a paired installation without blocking the core (974.8006ms)\r\n✔ standalone actual worker automatically inherits old login, persists it and keeps the original source (1379.8756ms)\r\n✔ a failed first install retries the disabled package instead of skipping migration (1184.1302ms)\r\nℹ tests 14\r\nℹ suites 0\r\nℹ pass 14\r\nℹ fail 0\r\nℹ cancelled 0\r\nℹ skipped 0\r\nℹ todo 0\r\nℹ duration_ms 8892.9544\r\n"
+    }
+  ],
+  "uploadPreparation": {
+    "date": "2026-10-16",
+    "stagedExtensionManifestEntriesVerified": 35,
+    "stagedExtensionManifestMismatch": [],
+    "artifactHashesVerified": true,
+    "gitDiffCheckPassed": true,
+    "knownHighRiskCredentialPatternHits": 0,
+    "readmeHashBytesPreservedByGitAttribute": true
+  }
+}

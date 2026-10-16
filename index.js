@@ -1,3 +1,4 @@
+import { mountPairedDshUpdate, pairedUpdateStatus, installPairedDshPlugin } from './src/extensions/paired-update.js'
 /**
  * Our Free Model — plugin entry (Host half).
  *
@@ -1424,6 +1425,8 @@ export function apply(ctx, config) {
   // reload does not re-toast the same version.
   refreshUpdatePush = () => pushUpdate(false)
 
+  mountPairedDshUpdate(ctx, logger)
+
   function emitTopology() {
     try { ctx.emit?.('llm/adapters-updated') } catch { /* no listener surface */ }
     registration.replace(routes())
@@ -1555,7 +1558,11 @@ function createApiRoutes(deps) {
         return send(200, buildSummary(deps))
       }
       if (method === 'GET' && routePath === '/extensions/account-connectors') {
-        return send(200, { accountConnectors: deps.extensions.state() })
+        return send(200, { accountConnectors: deps.extensions.state(), pairedUpdate: await deps.extensions.pairedStatus?.() })
+      }
+      if (method === 'POST' && routePath === '/extensions/account-connectors/retry-update') {
+        try { await deps.extensions.retryPaired(); return send(200, { pairedUpdate: await deps.extensions.pairedStatus() }) }
+        catch (error) { return send(503, { error: String(error.message), pairedUpdate: await deps.extensions.pairedStatus() }) }
       }
       if (method === 'POST' && routePath === '/extensions/account-connectors/refresh') {
         try { return send(200, { accountConnectors: await deps.extensions.refresh() }) }

@@ -1,25 +1,17 @@
-# 上游 2.3.0 分离版：开发验收安装文件
+# 2026-10-16 双插件分离开发候选
 
-请使用下面两个配套分支中的文件。先替换旧整合核心，再装独立账号扩展，按官方宿主提示重启；各渠道首次仍关闭，需要主动启用和正常登录。
+请先读 [协作者交接说明](../docs/COLLABORATOR_HANDOFF_2026-10-16.md)，其中包含完成程度、三种用法、迁移规则、复验命令和发布待办。
 
-## OFM 核心
+当前使用下列文件，均为开发候选，未正式签名或线上发布。指纹和大小见 [checksums.json](checksums.json)。
 
-https://raw.githubusercontent.com/look-back-lysj/dsh-our-free-model/refs/heads/sync/separated-upstream-20261015/dev-install/dsh-our-free-model-2.3.0.tgz
+- [dsh-our-free-model-2.3.1-split.1.tgz](dsh-our-free-model-2.3.1-split.1.tgz)
 
-## 独立账号插件
+  DSH 插件管理可用的 HTTPS 文件直链：
 
-https://raw.githubusercontent.com/look-back-lysj/dsh-ofm-account-connectors/refs/heads/sync/account-connectors-20261015/dev-install/dsh-ofm-account-connectors-0.1.0.tgz
+  https://raw.githubusercontent.com/look-back-lysj/dsh-our-free-model/refs/heads/sync/separated-upstream-20261015/dev-install/dsh-our-free-model-2.3.1-split.1.tgz
 
-## 独立网页/桌面使用的账号扩展 ZIP
+DSH 使用 tgz；外置 ZIP 需要解压后通过兼容宿主导入包含 extension.json 的目录。核心包已携带配套账号载荷，配套安装成功无需重复手动安装账号 tgz。
 
-https://raw.githubusercontent.com/look-back-lysj/dsh-ofm-account-connectors/refs/heads/sync/account-connectors-20261015/dev-install/account-connectors-0.1.0-dev.zip
+本次记录：核心 53/53 套件；账号 453/453、0 跳过；热更新专项 14/14、0 跳过；官方宿主隔离验收 14 项。真实厂商账号调用尚未验收。
 
-解压 ZIP 后导入包含 extension.json 的完整目录；ZIP 不作为 DSH tgz 安装。
-
-扩展仍为0.1.0，内容已更新，必须按 [checksums.json](checksums.json) 区分旧同版本候选。文件在这两个开发分支上可用，不代表 npm 或正式市场发行。
-
-核心代码回归52/52、独立扩展449/449零跳过、官方DSH0.2.0-rc.2隔离17项、实际双包与桌面包后端验证通过。详情和截图见 [分支说明](../docs/BRANCH_STATUS.md)。
-
-未完成：全部真实厂商账号、用户正式profile、原生Tauri窗口和安装向导、正式发行签名。上游整合包会被升级保护拒绝覆盖分离结构。
-
-Windows 2.3.0 x64安装器已本地构建并解包验收，没有随本次Git源码分支发布；完整可构建源码位于 packages/desktop 和 PACKAGING.md。
+目录中保留的 dsh-our-free-model-2.3.0.tgz、account-connectors-0.1.0-dev.zip 是历史候选，不用于本次验收。账号插件仍为 0.1.0，必须按本次哈希区分同版本历史内容。

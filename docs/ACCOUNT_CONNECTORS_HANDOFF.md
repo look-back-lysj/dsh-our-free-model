@@ -8,11 +8,15 @@
 
 扩展：look-back-lysj/dsh-ofm-account-connectors，refactor/independent-account-connectors。持有十三产品账号渠道、认证、独立界面、Worker、专用WASM和许可来源，可单独安装。
 
-## 安装和停止
+## 安装、热更新和停止
 
-先替换旧整合版OFM，再装独立扩展，按宿主要求重启。安装不启用，启用后各渠道仍首次关闭。账号管理由扩展处理，OFM指引页检测连接状态。
+新版核心包携带配套的独立账号扩展载荷。旧整合版通过签名热更新进入分离版时，核心启动会调用宿主插件管理器安装账号扩展，并把旧账号索引、凭据、模型开关、签到/用量/网关状态迁移到独立 dataDir。迁移采用 staging、回读校验和失败回滚；旧目录和旧凭据引用保留，不会因为迁移失败丢失登录状态。重复启动只会复用已完成迁移，不覆盖新凭据。
 
-停止撤回模型、取消任务；卸载保留数据。新旧模块注册冲突要先处理，不能保留旧供应商路由却显示新模块成功。不存在的账号模型不可误转匿名核心。
+更新包仍受原有清单签名、路径和单文件大小限制；配套账号载荷也逐文件校验。没有宿主 pluginManager 的极简/TUI composition 不等待热安装，核心模型车道照常启动。
+
+安装成功后，账号扩展默认沿用原来的启用状态；新增账号渠道仍按自愿启用规则运行。两个插件同时存在时，核心可以调用账号插件模型，账号插件也保留自己的独立管理页面和本地网关。停用一方只撤回它拥有的模型/监听，不删除另一方。
+
+停止撤回模型、取消任务；卸载保留数据。新旧模块注册冲突明确拒绝，不会保留旧供应商路由却假报新模块成功。不存在的账号模型不可误转匿名核心。
 
 DSH插件tgz和外置扩展zip位于各仓库dev-install，大小/SHA256见checksums.json。Windows核心安装程序作为草稿制品附件，未发布正式版本。复制安装链接应使用HTTPS文件直链，而不是网页仓库地址或本机路径。
 
@@ -23,6 +27,10 @@ DSH插件tgz和外置扩展zip位于各仓库dev-install，大小/SHA256见check
 扩展入口：README.md。npm ci --ignore-scripts，npm run build，npm test，npm run check。源码直接从vendor构建，不需要client-seed/runtime-seed或历史diagnostic目录。
 
 联合验证使用真实核心仓库绝对路径：node scripts/joint-smoke.mjs <核心仓库>，node scripts/joint-ui.mjs <核心仓库>；浏览器工具可用OFM_PLAYWRIGHT_DIR与OFM_BROWSER_EXECUTABLE指定。无真实账号的数据和截图已保存在验证说明中。
+
+## 热更新验收补充
+
+热更新专项位于 `D:/ofm-audits/20261015-paired-hot-update/`：旧签名更新器配套载荷安装 1 组、迁移/回滚/幂等 9 项、账号插件完整回归 452 项、实际外置页面与独立网关启停均已记录。
 
 ## 验证边界
 

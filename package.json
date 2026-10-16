@@ -1,6 +1,6 @@
 {
   "name": "dsh-our-free-model",
-  "version": "2.3.0",
+  "version": "2.3.1-split.1",
   "private": true,
   "type": "module",
   "description": "Our Free Model — DSH 插件与独立本地服务，提供免费模型、EAC、官方 API 聚合和本地模型网关；产品账号连接由用户独立安装的可选扩展提供。",
@@ -39,7 +39,8 @@
     "locale",
     "icon.svg",
     "cordis.patch.yml",
-    "LICENSE"
+    "LICENSE",
+    "companions"
   ],
   "keywords": [
     "dsh",
@@ -74,6 +75,7 @@
   "ofm": {
     "accountConnectors": "external",
     "upstreamRevision": "ac4c55ef5e0833bf0138846a7c5255ecbc14a07c",
-    "development": true
+    "development": true,
+    "pairedAccountUpdate": "ofm-paired-plugin/v1"
   }
 }

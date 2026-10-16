@@ -17,7 +17,7 @@ export function validateExtensionDescriptor(value) {
   return value
 }
 export function extensionEnvironment(dataDir) {
-  const allowed = ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TZ', 'LANG', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'OFM_CONNECTORS_GOOGLE_CLIENT_ID', 'OFM_CONNECTORS_GOOGLE_CLIENT_SECRET', 'CMDC_PAK_GOOGLE_CLIENT_ID', 'CMDC_PAK_GOOGLE_CLIENT_SECRET']
+  const allowed = ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TZ', 'LANG', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'OFM_CONNECTORS_GOOGLE_CLIENT_ID', 'OFM_CONNECTORS_GOOGLE_CLIENT_SECRET', 'CMDC_PAK_GOOGLE_CLIENT_ID', 'CMDC_PAK_GOOGLE_CLIENT_SECRET', 'DSH_OPENAI_GATEWAY_ENABLED', 'DSH_OPENAI_GATEWAY_PORT', 'DSH_OPENAI_GATEWAY_API_KEY']
   const env = Object.fromEntries(allowed.filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]))
   return { ...env, OFM_ACCOUNT_CONNECTORS_HOME: dataDir, OFM_CODEARTS_CACHE_DIR: dataDir + '/codearts-cache' }
 }
@@ -27,7 +27,8 @@ export async function startExtensionWorker({ entry, dataDir, extensionRoot, logg
   const instanceId = randomUUID()
   const worker = workerFactory(entry, {
     workerData: { dataDir, extensionRoot, instanceId, protocolVersion: 1 },
-    execArgv: process.execArgv.filter(arg => !arg.startsWith('--input-type') && !arg.startsWith('--inspect')),
+    // Host/Electron process flags can be illegal in a Worker (V8 pool, snapshot, etc.).
+    execArgv: [],
     env: extensionEnvironment(dataDir),
   })
   const pending = new Map()

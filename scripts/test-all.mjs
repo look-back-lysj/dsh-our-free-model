@@ -44,6 +44,7 @@ const suites = [
   ['feed', 'feed-test.mjs', []],
   ['updater', 'updater-test.mjs', []],
   ['separated-updater', 'separated-updater-test.mjs', []],
+  ['paired-hot-update', 'paired-hot-update-test.mjs', []],
   ['upgrade-ui', 'upgrade-ui-test.mjs', []],
   ['forward', 'forward-test.mjs', []],
   ['forward-boot', 'forward-boot-test.mjs', []],

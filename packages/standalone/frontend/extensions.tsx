@@ -64,7 +64,7 @@ export function ExtensionsPage({ summary, host }: { summary: Summary; host: Host
     </Card>
     <section className="extensions-guide" aria-labelledby="extension-install-title">
       <h2 id="extension-install-title">安装方法</h2>
-      <p>当前支持明确导入本机开发目录。正式扩展尚未发布，本页不会自动下载扩展。启用会运行你导入的本机代码，请确认来源可信。</p>
+      <p>配套核心更新会随安装包提供账号扩展，并迁移旧账号数据；手动单独安装时也可导入可信的本机开发目录。启用会运行扩展代码。</p>
       <ol><li>从你信任的来源取得独立扩展，将包含 <code>extension.json</code> 的目录保存在本机。</li><li>填写该目录的完整路径，确认信任来源后导入。宿主会检查协议、路径和文件完整性。</li><li>导入后单独启用扩展，再打开它自己的管理页，选择需要的渠道并登录。</li></ol>
       <form onSubmit={event => { event.preventDefault(); if (directory.trim() && trusted && !busy) void run('install', { path: directory.trim(), trustDevelopment: true }) }}>
         <label htmlFor="extension-directory">本机扩展目录的完整路径</label>

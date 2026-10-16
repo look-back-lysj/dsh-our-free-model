@@ -188,7 +188,7 @@ const post = (url, body) => callRoute(api(), 'POST', `/api/our-free-model${url}`
   checkThat('the turn answered through the adapter', answer.includes('answered by the free lane'), JSON.stringify(chunks).slice(0, 300))
 
   await until(() => freeLane.requests.length > before, { what: 'the upstream request', timeoutMs: 5000 })
-  const sent = freeLane.requests[freeLane.requests.length - 1]
+  const sent = [...freeLane.requests.slice(before)].reverse().find(request => request.body?.messages?.some(message => message.role === 'tool')) ?? freeLane.requests[freeLane.requests.length - 1]
   const toolRow = sent.body.messages.find(message => message.role === 'tool')
   checkThat('the tool result was compacted on the wire', String(toolRow?.content ?? '').length < BIG_DIFF.length,
     `sent ${String(toolRow?.content ?? '').length} bytes of ${BIG_DIFF.length}`)

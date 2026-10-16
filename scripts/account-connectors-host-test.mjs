@@ -5,6 +5,7 @@ import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createAccountConnectorsHost, createOptionalAccountBridge, combineCoreWithAccountConnectors } from '../src/extensions/account-connectors.js'
 import { inspectExtensionDirectory } from '../src/extensions/installation.js'
+import { extensionEnvironment } from '../src/extensions/worker-bridge.js'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const scratchRoot = path.join(root, '.extension-test-tmp')
@@ -51,6 +52,11 @@ try {
   host = await createAccountConnectorsHost({ dataDir })
   const fakeCore = { catalog: [{ id: 'free-test' }, { id: 'eac-test', channel: 'eac' }, { id: 'minimax/core-api', channel: 'aggregate' }], state() { return { catalog: this.catalog, membership: {}, settings: {} } }, publicModelRows() { return this.catalog }, async complete(request) { return { text: 'core:' + request.model } }, async refreshCatalog() { return this.catalog } }
   const combined = combineCoreWithAccountConnectors(fakeCore, host)
+  await check('worker receives only named local gateway settings and not unrelated server secrets', async () => {
+    const values={DSH_OPENAI_GATEWAY_ENABLED:'false',DSH_OPENAI_GATEWAY_PORT:'19625',DSH_OPENAI_GATEWAY_API_KEY:'synthetic-local-gateway-key',GITHUB_CLIENT_SECRET:'synthetic-server-only-secret'}
+    const saved=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]))
+    try{Object.assign(process.env,values);const env=extensionEnvironment(dataDir);for(const key of Object.keys(values).filter(key=>key.startsWith('DSH_OPENAI_GATEWAY')))assert.equal(env[key],values[key]);assert.equal(env.GITHUB_CLIENT_SECRET,undefined)}finally{for(const [key,value]of Object.entries(saved))if(value===undefined)delete process.env[key];else process.env[key]=value}
+  })
   await check('missing extension does not start account code and preserves EAC, free, official API', async () => {
     assert.equal(host.state().state, 'not-installed'); assert.deepEqual(combined.publicModelRows(), fakeCore.publicModelRows())
     assert.equal((await combined.complete({ model: 'eac-test' })).text, 'core:eac-test')

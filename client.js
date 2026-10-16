@@ -549,6 +549,11 @@ window.__ModuleLoader__.load({
         'gw.clientsOffHint': '先到「免费模型」页的「本地转发」打开端口，这里才会给出可用的地址与配方。',
         'gw.clientsModels': '可转发模型 {n} 个',
         'nav.tab.extensions': '账号连接扩展',
+        'ext.pairedTitle': '双插件更新状态',
+        'ext.pairedComplete': '核心与账号插件已配套，原有账号数据已保留。',
+        'ext.pairedPending': '核心已更新，账号插件正在安装和迁移；完成前请勿重复安装。',
+        'ext.pairedRetry': '重试配套安装',
+        'ext.pairedError': '配套更新尚未完成，原有账号数据仍保留，请查看状态。',
         'ext.title': '账号连接扩展',
         'ext.sub': '单独安装、自主启用，通过独立插件管理产品账号；OFM 的免费模型、EAC 和官方 API 功能照常使用。',
         'ext.cardTitle': 'OFM 账号连接扩展',
@@ -1113,6 +1118,11 @@ window.__ModuleLoader__.load({
         'gw.clientsOffHint': 'Enable it under "Local forward" on the Free models page first; only then does this section have a usable address and recipes.',
         'gw.clientsModels': '{n} servable models',
         'nav.tab.extensions': 'Account extension',
+        'ext.pairedTitle': 'Paired plugin update',
+        'ext.pairedComplete': 'Both plugins are installed and existing account data is retained.',
+        'ext.pairedPending': 'Core updated; installing the independent account plugin and migrating data.',
+        'ext.pairedRetry': 'Retry paired installation',
+        'ext.pairedError': 'Paired update is incomplete. Existing account data is retained; check its status.',
         'ext.title': 'Account connectors',
         'ext.sub': 'Install and enable it separately to manage product accounts in its own plugin. OFM free models, EAC and official APIs remain available.',
         'ext.cardTitle': 'OFM account connectors',
@@ -3424,6 +3434,18 @@ a.ofm_btn{display:inline-flex;align-items:center;justify-content:center;text-dec
       const alive = useRef(true)
       useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
       const extension = accountExtensionView(detected ?? panel.data?.accountConnectors ?? summary?.data?.extensions?.accountConnectors)
+      const paired = panel.data?.pairedUpdate
+      useEffect(() => {
+        if (!paired || !['prepared', 'installing'].includes(paired.phase)) return
+        const timer = setInterval(() => panel.reload(), 3000)
+        return () => clearInterval(timer)
+      }, [paired?.phase, panel.reload])
+      const retryPaired = async () => {
+        setBusy(true)
+        try { await post('/extensions/account-connectors/retry-update', {}, 120_000); panel.reload() }
+        catch { panel.reload(); setNotice(t('ext.pairedError')) }
+        finally { setBusy(false) }
+      }
       useEffect(() => {
         if (panel.data?.accountConnectors !== undefined) setDetected(panel.data.accountConnectors)
       }, [panel.data])
@@ -3447,6 +3469,9 @@ a.ofm_btn{display:inline-flex;align-items:center;justify-content:center;text-dec
       return h('div', { className: 'ofm_page' },
         h(PageHero, { title: t('ext.title'), sub: t('ext.sub') },
           h(Pill, { strong: true, tone: extension.state === 'ready' ? 'ok' : problem ? 'err' : 'warn' }, extensionStateLabel(extension.state, t))),
+        paired && !['not-started', 'not-applicable'].includes(paired.phase) ? h(Section, { title: t('ext.pairedTitle') },
+          h('p', { className: 'ofm_note', role: paired.phase === 'complete' ? 'status' : 'alert' }, paired.phase === 'complete' ? t('ext.pairedComplete') : paired.error || t('ext.pairedPending')),
+          ['rolled-back', 'recovery-required'].includes(paired.phase) ? h(Button, { disabled: busy, onClick: () => void retryPaired() }, t('ext.pairedRetry')) : null) : null,
         h(Section, { title: t('ext.cardTitle'), hint: t('ext.optional') },
           h('div', { className: 'ofm_panel ofm_rise', 'aria-busy': busy ? 'true' : 'false' },
             h('p', { className: 'ofm_note', role: problem ? 'alert' : 'status' }, extensionStateHint(extension.state, t)),

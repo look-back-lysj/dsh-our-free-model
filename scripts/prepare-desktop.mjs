@@ -24,6 +24,7 @@ export function stageDesktopService(destination) {
     }
   }
   tree('src', file => /\.(js|json)$/.test(file))
+  if (fs.existsSync(path.join(repositoryRoot, 'companions/account-connectors.json.gz'))) copy('companions/account-connectors.json.gz')
   for (const name of ['cli', 'service', 'management', 'login-terminal', 'eac', 'extensions']) copy(`packages/standalone/${name}.mjs`)
   const assets = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'packages/standalone/web/assets.json'), 'utf8'))
   for (const name of ['index.html', 'assets.json', ...assets]) {

@@ -13,7 +13,7 @@ let checks = 0
 const check = (name, action) => { action(); console.log('ok ' + (++checks) + ' ' + name) }
 try {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
-  check('core npm whitelist does not ship account vendor implementation, WASM or optional auto-install dependency', () => {
+  check('core has no direct account vendor import or runtime dependency; companion is a separately validated installation payload', () => {
     assert.equal(pkg.files.some(forbidden), false)
     assert.equal(Object.keys({ ...pkg.dependencies, ...pkg.optionalDependencies }).some(name => /account-connectors|channel-pack/.test(name)), false)
     for (const file of ['vendor/channel-pack', 'packages/standalone/channels', 'src/chan-relay.js']) assert.equal(fs.existsSync(path.join(root, file)), false, file)
@@ -24,11 +24,13 @@ try {
     assert.equal(files.some(forbidden), false)
     for (const required of ['src/extensions/account-connectors.js', 'src/core/runtime.js', 'src/aggregate.js', 'src/forward.js', 'packages/standalone/eac.mjs', 'packages/standalone/extensions.mjs', 'src/providers/registry.json']) assert.ok(files.includes(required), required)
     for (const file of files) assert.ok(fs.statSync(path.join(root, file)).isFile(), file)
+    if (fs.existsSync(path.join(root, 'companions/account-connectors.json.gz'))) assert.ok(files.includes('companions/account-connectors.json.gz'))
   })
   check('actual staged desktop resources exclude account modules and undeclared web leftovers', () => {
     stageDesktopService(scratch)
     const files = walk(scratch)
     assert.equal(files.some(forbidden), false)
+    if (fs.existsSync(path.join(root, 'companions/account-connectors.json.gz'))) assert.ok(files.includes('companions/account-connectors.json.gz'), 'desktop must carry the paired-update payload')
     const assets = JSON.parse(fs.readFileSync(path.join(root, 'packages/standalone/web/assets.json'), 'utf8'))
     const shippedAssets = files.filter(file => file.startsWith('packages/standalone/web/')).map(file => file.replace('packages/standalone/web/', ''))
     assert.deepEqual(shippedAssets.sort(), [...assets, 'index.html', 'assets.json', ...fs.existsSync(path.join(root, 'packages/standalone/web/splash.html')) ? ['splash.html'] : []].sort())

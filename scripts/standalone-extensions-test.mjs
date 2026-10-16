@@ -57,7 +57,7 @@ const { unavailableAccountConnectors } = await import('../packages/standalone/ex
 const quiet = { warn() {}, info() {}, error() {} }
 const isolatedEac = options => createStandaloneEac({ ...options, credentialOf: () => ({ mode: 'worker', base: fixtureUrl + '/v1' }), fetch: globalThis.fetch })
 async function start(options = {}) {
-  const service = await startStandalone({ dataDir: path.join(scratch, crypto.randomUUID()), port: 0, refresh: false, logger: quiet, eacFactory: isolatedEac, ...options })
+  const service = await startStandalone({ dataDir: path.join(scratch, crypto.randomUUID()), port: 0, refresh: false, pairedUpdate:false, logger: quiet, eacFactory: isolatedEac, ...options })
   services.push(service); await service.ready
   return service
 }

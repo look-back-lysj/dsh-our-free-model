@@ -21,7 +21,7 @@ let service, cookie = ''
 let checks = 0
 const check = async (name, action) => { await action(); console.log('ok ' + (++checks) + ' ' + name) }
 try {
-  service = await startStandalone({ dataDir, port: 0, refresh: false, logger: { info() {}, warn() {}, error() {} }, accountConnectorsFactory: config => createAccountConnectorsHost({ ...config, workerFactory: (entry, options) => new Worker(entry, { ...options, workerData: { ...options.workerData, offline: true } }) }) })
+  service = await startStandalone({ dataDir, port: 0, refresh: false, pairedUpdate:false, logger: { info() {}, warn() {}, error() {} }, accountConnectorsFactory: config => createAccountConnectorsHost({ ...config, workerFactory: (entry, options) => new Worker(entry, { ...options, workerData: { ...options.workerData, offline: true } }) }) })
   const request = async (relative, payload) => {
     const response = await fetch(service.url + relative, { method: payload === undefined ? 'GET' : 'POST', headers: { ...cookie ? { cookie } : {}, 'content-type': 'application/json', origin: service.url }, body: payload === undefined ? undefined : JSON.stringify(payload) })
     return { response, value: await response.json() }

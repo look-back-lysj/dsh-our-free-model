@@ -742,7 +742,8 @@ await checkAsync('startForwardServer reports the port it settled on and still se
   assert.equal(server.fellBack, true)
   assert.equal(server.requestedPort, held.port)
   assert.notEqual(server.port, held.port)
-  assert.equal(server.bindError?.code, 'EADDRINUSE')
+  // Windows may report a held loopback port as EACCES; both mean fallback was required.
+  assert.ok(['EADDRINUSE', 'EACCES'].includes(server.bindError?.code), `unexpected bind failure: ${server.bindError?.code}`)
   const response = await fetch(`http://127.0.0.1:${server.port}/health`)
   assert.equal(response.status, 200)
   assert.equal((await response.json()).ok, true)

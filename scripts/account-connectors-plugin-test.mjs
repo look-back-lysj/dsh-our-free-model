@@ -1,3 +1,4 @@
+import { mountPairedDshUpdate, pairedUpdateStatus, installPairedDshPlugin } from '../src/extensions/paired-update.js'
 /**
  * DSH core separation contract. No profile, credential file, supplier or live
  * model is touched: host wiring runs against in-memory dependencies and the
@@ -113,7 +114,7 @@ function mountHost(extension) {
     addSavings() {}, describeSavingsTotal: () => ({}), emptySavings: () => ({}), saverConfig: () => ({}), savingsPercent: () => 0,
     CAVEMAN_LEVELS: ['off', 'lite'], PONYTAIL_LEVELS: ['off'], OPTIMIZATIONS: [],
     createModelRuntime: () => runtime, createRuntimeStores: () => ({ settings, stats, availability, dispose() {} }),
-    createOptionalAccountBridge, combineCoreWithAccountConnectors, buildStats,
+    createOptionalAccountBridge, combineCoreWithAccountConnectors, buildStats, mountPairedDshUpdate, pairedUpdateStatus, installPairedDshPlugin,
   }
   // Only import declarations are replaced. All apply()/API/summary code runs as
   // written, with memory-only services; any account dynamic import would fail.
