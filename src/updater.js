@@ -435,6 +435,18 @@ function sha256File(file) {
  */
 const STAGE_ATTEMPTS = 3
 const STAGE_BACKOFF_MS = 700
+/** A fixed per-request timeout cannot distinguish a stalled host from a large
+ *  file on a slow but healthy egress. The transfer budget therefore scales with
+ *  the size the manifest already promised, at a 50 KB/s floor. */
+const STAGE_MIN_BYTES_PER_SECOND = 50_000
+
+/** Per-file transfer budget: the old fixed timeout remains the floor for small
+ *  files, while a 4 MB engine part gets roughly 84 s instead of 30 s. */
+export function fileDownloadBudgetMs(file, timeoutMs = 30000) {
+  const floor = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30000
+  const size = Number.isFinite(file?.size) && file.size > 0 ? file.size : 0
+  return Math.max(floor, Math.ceil(size / STAGE_MIN_BYTES_PER_SECOND) * 1000)
+}
 
 /** A CN egress to the CDN drops connections regularly, and a one-shot staging
  * turned one flaky second into a whole failed upgrade ("fetch failed" on a
@@ -460,28 +472,30 @@ function isTransientDownloadError(error) {
  *  mutable branch's raw bytes could move between the manifest read and the file
  *  download, which is exactly what pinning exists to prevent.
  *
- *  Both jsDelivr edges are recognized as origins here, because the manifest may
- *  itself have been discovered on either one: a gcore-sourced manifest composes
- *  gcore file URLs, and those need the same fallbacks. */
+ *  A manifest may be discovered on either jsDelivr edge, raw, or the raw proxy;
+ *  each official pinned source gets fallbacks to the same commit and file. */
 function stagedFileSources(manifestUrl, manifest, relativePath) {
   const file = fileUrlOf(manifestUrl, manifest, relativePath)
   const url = new URL(file)
-  const prefix = `/gh/${REPO}@`
-  const jsdelivr = url.hostname === 'cdn.jsdelivr.net' || url.hostname === 'gcore.jsdelivr.net'
-  if (url.protocol !== 'https:' || !jsdelivr || url.port
-    || url.username || url.password || !url.pathname.startsWith(prefix)
-    || !/^[a-f0-9]{40}\//.test(url.pathname.slice(prefix.length))) return [file]
-  const sha = url.pathname.slice(prefix.length).split('/')[0]
-  const rest = url.pathname.slice(prefix.length + sha.length + 1)
-  const cdn = new URL(url)
-  cdn.hostname = 'cdn.jsdelivr.net'
-  const gcore = new URL(url)
-  gcore.hostname = 'gcore.jsdelivr.net'
+  if (url.protocol !== 'https:' || url.port || url.username || url.password) return [file]
+  const cdnPrefix = `/gh/${REPO}@`
+  const rawPrefix = `/${REPO}/`
+  const proxyPrefix = `/https://raw.githubusercontent.com/${REPO}/`
+  let suffix
+  if (['cdn.jsdelivr.net', 'gcore.jsdelivr.net'].includes(url.hostname) && url.pathname.startsWith(cdnPrefix)) {
+    suffix = url.pathname.slice(cdnPrefix.length)
+  } else if (url.hostname === 'raw.githubusercontent.com' && url.pathname.startsWith(rawPrefix)) {
+    suffix = url.pathname.slice(rawPrefix.length)
+  } else if (url.hostname === 'gh-proxy.com' && url.pathname.startsWith(proxyPrefix)) {
+    suffix = url.pathname.slice(proxyPrefix.length)
+  } else return [file]
+  if (!/^[a-f0-9]{40}\//.test(suffix)) return [file]
+  const [sha, ...pathParts] = suffix.split('/')
+  const rest = pathParts.join('/')
+  const cdn = `https://cdn.jsdelivr.net/gh/${REPO}@${sha}/${rest}`
+  const gcore = `https://gcore.jsdelivr.net/gh/${REPO}@${sha}/${rest}`
   const raw = `https://raw.githubusercontent.com/${REPO}/${sha}/${rest}`
-  // Keep the origin that was actually asked first, then the other edge, then the
-  // two raw transports at the same pinned commit.
-  const others = [cdn.href, gcore.href].filter(href => href !== file)
-  return [file, ...others, raw, viaRawProxy(`${REPO}/${sha}/${rest}`)]
+  return [...new Set([file, cdn, gcore, raw, viaRawProxy(`${REPO}/${sha}/${rest}`)])]
 }
 
 export async function stageRelease({ manifest, manifestUrl, stageDir, fetchImpl = fetch, concurrency = 4, onProgress = () => {}, timeoutMs = 30000 }) {
@@ -511,12 +525,22 @@ export async function stageRelease({ manifest, manifestUrl, stageDir, fetchImpl 
       const file = manifest.files[cursor++]
       const target = path.join(stageDir, ...file.path.split('/'))
       const sources = stagedFileSources(manifestUrl, manifest, file.path)
+      const budgetMs = fileDownloadBudgetMs(file, timeoutMs)
+      // One slow transfer may consume its full budget. The file deadline leaves
+      // room for one fallback mirror while still bounding retries for a release
+      // whose hosts are all stalled.
+      const fileDeadline = Date.now() + budgetMs * 2
       let lastError
       for (let attempt = 1; attempt <= STAGE_ATTEMPTS; attempt += 1) {
         try {
-          const signal = AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined
           let body
           for (let mirror = 0; mirror < sources.length; mirror++) {
+            const remaining = fileDeadline - Date.now()
+            if (remaining <= 0) throw new Error('file download deadline exceeded')
+            // Each mirror owns its timer so one host's timeout cannot abort the
+            // next transport before it is requested. The scaled budget also
+            // gives a large file more than the old fixed 30 s.
+            const signal = AbortSignal.timeout ? AbortSignal.timeout(Math.max(1, Math.min(budgetMs, remaining))) : undefined
             try {
               const response = await fetchImpl(bustCdnCache(sources[mirror]), { redirect: 'error', signal })
               if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -529,11 +553,13 @@ export async function stageRelease({ manifest, manifestUrl, stageDir, fetchImpl 
               // jsDelivr structurally cannot serve: its size ceiling answers 403
               // for the vendored engine binary, so the same pinned commit's raw
               // transport is tried instead. Any other 403 still stops here.
+              const host = new URL(sources[mirror]).hostname
               const oversized = status === '403' && ENGINE_BINARY.test(file.path)
+                && (host === 'cdn.jsdelivr.net' || host === 'gcore.jsdelivr.net')
               const canFallback = status
                 ? /^(3\d\d|404|429|5\d\d)$/.test(status) || oversized
                 : isTransientDownloadError(error)
-              if (!canFallback || mirror === sources.length - 1 || signal?.aborted) throw error
+              if (!canFallback || mirror === sources.length - 1) throw error
             }
           }
           if (body.length !== file.size) throw new Error(`size ${body.length} != manifest ${file.size}`)
@@ -549,9 +575,11 @@ export async function stageRelease({ manifest, manifestUrl, stageDir, fetchImpl 
         } catch (error) {
           lastError = error
           const httpStatus = /^HTTP (\d{3})$/.exec(String(error?.message ?? ''))?.[1]
-          const retryable = httpStatus ? httpStatus === '429' || httpStatus.startsWith('5') : isTransientDownloadError(error)
+          const outOfTime = Date.now() >= fileDeadline
+          const retryable = !outOfTime && (httpStatus ? httpStatus === '429' || httpStatus.startsWith('5') : isTransientDownloadError(error))
           if (attempt >= STAGE_ATTEMPTS || !retryable) break
-          await new Promise(resolve => setTimeout(resolve, STAGE_BACKOFF_MS * attempt))
+          const pause = Math.min(STAGE_BACKOFF_MS * attempt, Math.max(0, fileDeadline - Date.now()))
+          if (pause > 0) await new Promise(resolve => setTimeout(resolve, pause))
         }
       }
       if (lastError) failures.push(`${file.path}: ${lastError?.message ?? lastError}`)
@@ -856,12 +884,26 @@ export function verifyInstalled(pkgDir, manifest) {
  * @param {string} pkgDir - the installed package directory
  * @returns {boolean}
  */
-export function isPackageManagerOwned(pkgDir) {
-  const profileDir = path.dirname(path.dirname(path.resolve(pkgDir)))
+export function isPackageManagerOwned(pkgDir, packageName = PACKAGE_NAME) {
+  const profileDir = profileDirOf(pkgDir)
   const lockfile = readTextFile(path.join(profileDir, 'pnpm-lock.yaml'))
-  if (lockfile !== undefined && lockfileDeclaresPackage(lockfile, PACKAGE_NAME)) return true
+  if (lockfile !== undefined && lockfileDeclaresPackage(lockfile, packageName)) return true
   const modules = readTextFile(path.join(profileDir, 'node_modules', '.modules.yaml'))
-  return modules !== undefined && modulesHoistsPackage(modules, PACKAGE_NAME)
+  return modules !== undefined && modulesHoistsPackage(modules, packageName)
+}
+
+/**
+ * The profile root a package directory belongs to.
+ *
+ * A bare install is <profile>/node_modules/<name>; a scoped one is
+ * <profile>/node_modules/@scope/<name>. Walking to node_modules instead of
+ * counting two parents keeps both layouts pointed at the profile, where pnpm
+ * writes its lockfile and .modules.yaml (issue #773).
+ */
+export function profileDirOf(pkgDir) {
+  let dir = path.resolve(pkgDir)
+  while (dir !== path.dirname(dir) && path.basename(dir) !== 'node_modules') dir = path.dirname(dir)
+  return path.dirname(dir)
 }
 
 function readTextFile(file) {
@@ -879,9 +921,10 @@ function readTextFile(file) {
  *  full install — a real tree inside the profile declared as a relative
  *  `link:`. A `file:`, tarball-URL or registry specifier does record a source
  *  pnpm can re-extract, and stays "owned". */
-function lockfileDeclaresPackage(text, name) {
+export function lockfileDeclaresPackage(text, name) {
   const lines = text.split(/\r?\n/)
-  const entry = new RegExp(`^(\\s*)${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:\\s*$`)
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const entry = new RegExp(`^(\\s*)['"]?${escaped}['"]?\\s*:\\s*$`)
   for (let index = 0; index < lines.length; index += 1) {
     const match = entry.exec(lines[index])
     if (match === null) continue
