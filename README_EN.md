@@ -431,7 +431,8 @@ src/combos.js fallback chains: virtual catalog rows, two strategies, intersected
 src/route/classify.js one failure vocabulary and cooldown policy for every lane
 src/trust.js    request trust fence for the plugin's routes (connection bridge
                 + structural fallback)
-src/push.js     SSE push hub: arrivals, update availability, upgrade done
+index.js        SSE push hub (createPushHub; src/push.js was folded in): arrivals,
+                update availability, upgrade done
 src/feed.js     remote announcement feed: multi-source fetch, validation, cache,
                 arrival detection
 src/updater.js  in-app upgrade: manifest validation, SHA-256 checks, backup,

@@ -519,10 +519,10 @@ async function warmCompositor() {
 async function capture(name, width, theme) {
   const displayed = await warmCompositor()
   if (name === 'routing') {
-    await frame.locator('.rt-hub > b').filter({ hasText: 'Our Free Model' }).waitFor()
-    assert.equal(await frame.locator('.rt-hub > svg.rt-bird').count(), 0)
-    await until(async () => frame.locator('.rt-hub > img.ofm-brand-icon').evaluate(image =>
-      image.complete && image.naturalWidth > 0).catch(() => false), 10000, 'routing host brand image')
+    // The engine's own bird and name; the host supplies theme and toolbar only.
+    await frame.locator('.rt-hub > b').filter({ hasText: 'magpie' }).waitFor()
+    await frame.locator('.rt-hub > svg.rt-bird').waitFor()
+    assert.equal(await frame.locator('.rt-hub > img.ofm-brand-icon').count(), 0)
   }
   const painted = await frame.locator('body').evaluate(() => new Promise(resolve => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve({

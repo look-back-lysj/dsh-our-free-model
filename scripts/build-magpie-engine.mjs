@@ -5,7 +5,7 @@ import { chmod, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/prom
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const revision = 'eef99e4bbebaf363840847dce4a33ee72eb37945'
+export const revision = '3bf298e70a5949c146d18a8f595ed89f5601b68f'
 const upstream = 'https://github.com/yetone/magpie.git'
 const version = `ofm-${revision.slice(0, 12)}`
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -97,7 +97,15 @@ async function main() {
   const temporary = path.join(scratch, executable)
   // Upstream's own Makefile releases with `-s -w`; the stripped binary also
   // keeps its gzip payload small enough for the legacy updater's 80-file cap.
-  const flags = ['-tags', 'nogui', '-trimpath', '-buildvcs=true', '-ldflags', `-s -w -X main.version=${version}`]
+  //
+  // `packedassets` is upstream's own release tag (Makefile's `build-release`):
+  // it embeds the web UI as one zip instead of ~1,400 loose files, which is
+  // where a large part of the release binary's size came from before. Without
+  // it the binary is several MiB larger and needs more shards than the legacy
+  // updater's 80-file cap allows.
+  await run('go', ['run', './build/assetpack', 'internal/gui/assets', 'internal/gui/assets.zip'], source, false)
+  const tags = 'nogui,packedassets'
+  const flags = ['-tags', tags, '-trimpath', '-buildvcs=true', '-ldflags', `-s -w -X main.version=${version}`]
   await run('go', ['build', ...flags, '-o', temporary, '.'], source, false)
   const buildInfo = await run('go', ['version', '-m', temporary])
   if (!buildInfo.includes(`vcs.revision=${revision}`)) {
@@ -115,7 +123,7 @@ async function main() {
   for await (const chunk of createReadStream(temporary)) digest.update(chunk)
   const sha256 = digest.digest('hex')
   const modules = []
-  const listed = await run('go', ['list', '-deps', '-tags', 'nogui', '-f',
+  const listed = await run('go', ['list', '-deps', '-tags', tags, '-f',
     '{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}{{end}}', '.'])
   const notices = [
     '# Magpie engine notices',
@@ -130,11 +138,13 @@ async function main() {
       'sync that finds an empty catalog skips the write instead of emptying the',
       "agent's own model list — a provider-less engine must never wipe a wired",
       "agent's picker. Everything else is built without upstream modifications",
-      'using the nogui tag, which excludes the native desktop shell and retains',
-      'the complete embedded web UI and built-in plugins.',
+      "using upstream's own release tags (nogui,packedassets): nogui excludes the native",
+      'desktop shell, packedassets embeds the web UI as upstream ships it, and both',
+      'retain the complete embedded web UI and built-in plugins.',
     ] : [
-      'Built without upstream modifications using the nogui tag. This excludes the native',
-      'desktop shell and retains the complete embedded web UI and built-in plugins.',
+      "Built without upstream modifications using upstream's own release tags",
+      '(nogui,packedassets). This excludes the native desktop shell and retains the',
+      'complete embedded web UI and built-in plugins.',
     ]),
     'The owner disables automatic binary updates; upgrades go through this builder.',
     'The upstream MIT license is reproduced in LICENSE. Go dependency license and',

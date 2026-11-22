@@ -1,6 +1,6 @@
 import { ROUTE_MAIN, ROUTE_REGION } from '../adapter.js'
 import { toOpenAiUsage } from '../forward.js'
-import { carryFailure } from '../failure.js'
+import { carryFailure } from '../http.js'
 import { effortsFor, defaultEffortFor } from '../effort.js'
 import { flattenResponsesTools, flatNamespaceToolName, normalizeToolName } from '../messages.js'
 

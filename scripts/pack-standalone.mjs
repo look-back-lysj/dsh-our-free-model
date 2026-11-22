@@ -36,8 +36,8 @@ const sourceFiles = [
     .map(name => `packages/standalone/channels/${name}.mjs`),
   'packages/standalone/web/index.html',
   'packages/standalone/web/assets.json',
-  ...['adapter', 'aggregate', 'anthropic', 'catalog', 'channel', 'combos', 'deferred-response', 'disclaimer', 'eac', 'eac-login', 'eac-user', 'effort',
-    'egress', 'engine-payload', 'failure', 'forward', 'gemini', 'http', 'image-pricing', 'kilo', 'local-optimize',
+  ...['adapter', 'aggregate', 'anthropic', 'catalog', 'channel', 'combos', 'disclaimer', 'eac', 'eac-login', 'eac-user', 'effort',
+    'egress', 'engine-payload', 'forward', 'gemini', 'http', 'kilo', 'local-optimize',
     'loopback-fetch', 'magpie-engine', 'magpie-models', 'magpie-policy', 'messages', 'model-test', 'open-external', 'probe', 'recovery',
     'store', 'stream', 'subscriptions', 'subscription-completion', 'subscription-adapter', 'token-saver', 'trust', 'upstream', 'vault', 'vault-data', 'vault-anchor']
     .map(name => `src/${name}.js`),

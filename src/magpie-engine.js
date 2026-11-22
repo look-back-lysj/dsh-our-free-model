@@ -14,14 +14,6 @@ import {
 } from './magpie-policy.js'
 
 const vendor = fileURLToPath(new URL('../vendor/magpie/', import.meta.url))
-function readBrandIcon() {
-  try {
-    return `data:image/svg+xml;base64,${readFileSync(new URL('../icon.svg', import.meta.url)).toString('base64')}`
-  } catch {
-    return ''
-  }
-}
-const brandIcon = readBrandIcon()
 export const MAGPIE_UI_PREFIX = '/api/our-free-model/engine/ui/'
 const PREFIX_HINT = '__ofm_ui_prefix'
 const INTERNAL_KEY_ID = 'our-free-model-engine'
@@ -344,26 +336,11 @@ for (const name of ["pushState","replaceState"]) {
 }
 
 // Presentation only: the bundled assets, settings and sandbox pages stay intact.
+// This is the engine's own page, styled to sit inside the host panel: the host
+// supplies the theme tokens and its own toolbar, and a few rows upstream sizes
+// for a wide window are given a narrow-panel answer. Nothing here renames,
+// re-icons or hides anything the engine draws — the page stays magpie's.
 const engineAppearanceCSS = `
-:root[data-ofm-engine] :is(.top,.side-top) > .brand,
-:root[data-ofm-engine] #agents :is(.ag-menu,.import) > .ic[data-icon="magpie"],
-:root[data-ofm-engine] #addSheet .tile > .ic[data-icon="magpie"],
-:root[data-ofm-engine] #addSheet .tiles > [data-ofm-promotion],
-:root[data-ofm-engine] #about :is(.discord,.github),
-:root[data-ofm-engine] #nav button[data-view="plugins"] > span,
-:root[data-ofm-engine] #view-plugins :is(.pm-intro,.pm-sechead),
-:root[data-ofm-engine] #addProvider.has-new::after { display:none!important }
-:root[data-ofm-engine] #view-plugins > .ofm-plugin-source {
-  flex:none; margin:0 2px 10px; padding:7px 10px; border:1px solid var(--line-2);
-  border-radius:8px; background:var(--card-2); color:var(--fg-2);
-  font-size:11.5px; line-height:1.5; text-wrap:pretty;
-}
-:root[data-ofm-engine] #nav button[data-view="plugins"] > .nav-ic { display:block!important; flex:none }
-:root[data-ofm-engine] body:not(.side-nav) #nav button[data-view="plugins"] { display:inline-flex; align-items:center; justify-content:center; min-width:32px }
-:root[data-ofm-engine] #view-routing .rt-flier { display:none!important }
-:root[data-ofm-engine] #view-routing .rt-hub > .ofm-brand-icon { border-radius:6px; object-fit:cover; }
-:root[data-ofm-engine] #view-routing .rt-hub > b { white-space:normal; overflow:visible; overflow-wrap:anywhere; line-height:1.35; }
-:root[data-ofm-engine] .side-top:has(> .brand:only-child) { height:10px!important; min-height:0!important }
 :root[data-ofm-engine] :is(.top,.sidebar,.view,.row,.editor,.sheet,.dialog,.pop,.seg,button,input,textarea,select) { letter-spacing:0 }
 :root[data-ofm-engine] :is(.row,.editor,.sheet,.dialog,.pop) { border-radius:8px }
 :root[data-ofm-engine] :is(button,input,textarea,select) { font-family:var(--ui-font,var(--font)); }
@@ -485,111 +462,6 @@ function engineAppearanceBridge() {
   }).observe(root, { attributes: true, attributeFilter: ['data-theme'] })
 }
 
-function engineProductCopy(brandIcon) {
-  if (typeof window.t !== 'function' || typeof I18N === 'undefined') return
-  const translate = window.t
-  // Snapshot core templates before plugins register their own words. Replace
-  // product mentions before filling slots, never strings supplied by a user.
-  const templates = new Set(Object.values(I18N).flatMap(strings => Object.keys(strings)))
-  const brand = text => text.replace(
-    /(^|[^a-z0-9_{}./:@-])magpie(?!:\/\/)(?=$|[^a-z0-9_{}./@-])/gi,
-    (match, before, offset, full) => {
-      const rest = full.slice(offset + match.length)
-      // These are executable command names, not product copy.
-      return /^\s+(?:web|quota|accounts|serve|version|update|status|models|doctor|help)\b/i.test(rest)
-        ? match : before + 'Our Free Model'
-    })
-  window.t = function (source, values) {
-    if (!templates.has(source) || !/magpie/i.test(source)) return translate(source, values)
-    let text = brand(translate(source))
-    if (values) for (const key in values) text = text.split('{' + key + '}').join(values[key])
-    return text
-  }
-  // Cache the upstream English exactly as translateStatic does, so changing
-  // language continues to use the original translation keys.
-  for (const element of document.querySelectorAll('[data-t]')) {
-    if (element.dataset.en === undefined) element.dataset.en = element.textContent
-    if (templates.has(element.dataset.en)) element.textContent = window.t(element.dataset.en)
-  }
-  document.title = 'Our Free Model'
-  document.querySelector('link[rel="icon"]')?.remove()
-  const brandLabels = () => {
-    const plugins = document.querySelector('#nav button[data-view="plugins"]')
-    if (plugins) {
-      const label = translate('Plugins')
-      if (plugins.getAttribute('aria-label') !== label) plugins.setAttribute('aria-label', label)
-      if (plugins.getAttribute('title') !== label) plugins.setAttribute('title', label)
-    }
-    for (const element of document.querySelectorAll('.top > .brand > span:not(.logo),.side-top > .brand > span:not(.logo)')) {
-      if (element.textContent.trim() === 'magpie') element.textContent = 'Our Free Model'
-    }
-    for (const element of document.querySelectorAll('#agents button.field.import > .v')) {
-      if (element.textContent === 'magpie') element.textContent = 'Our Free Model'
-    }
-    for (const element of document.querySelectorAll('#view-routing .rt-hub > b')) {
-      if (element.textContent.trim() === 'magpie') element.textContent = 'Our Free Model'
-    }
-    for (const element of document.querySelectorAll('#view-routing .rt-hub > svg.rt-bird')) {
-      const image = document.createElement('img')
-      image.className = 'rt-bird ofm-brand-icon'
-      image.src = brandIcon
-      image.alt = ''
-      image.width = image.height = 26
-      element.replaceWith(image)
-    }
-    // Only the paid discovery section is hidden; an already configured partner
-    // is still an ordinary, fully editable provider elsewhere in the UI.
-    for (const heading of document.querySelectorAll('#addSheet .tiles > .kind')) {
-      if (heading.querySelector('b')?.textContent !== translate('Partners')) continue
-      heading.setAttribute('data-ofm-promotion', '')
-      if (heading.nextElementSibling?.classList.contains('grid')) heading.nextElementSibling.setAttribute('data-ofm-promotion', '')
-    }
-    const add = document.querySelector('#addProvider.has-new')
-    if (add?.hasAttribute('title')) add.removeAttribute('title')
-    pluginSource()
-  }
-  // The plugin market is magpie's community's, not this product's: say whose it
-  // is on every tab that offers third-party code. The built-in tab lists the
-  // engine's own switches, so it carries no such notice. The page redraws its
-  // children through replaceKeeping, so the note is put back when it goes.
-  const pluginSource = () => {
-    const view = document.querySelector('#view-plugins')
-    if (!view) return
-    const body = view.querySelector(':scope > .pm-body')
-    const tabs = [...view.querySelectorAll('.lib-tabs .opt')]
-    const active = tabs.findIndex(tab => tab.classList.contains('on'))
-    const notice = view.querySelector(':scope > .ofm-plugin-source')
-    if (!body || active === 0) { notice?.remove(); return }
-    const zh = /^zh/i.test(typeof locale === 'string' ? locale : document.documentElement.lang || '')
-    const text = zh
-      ? '这里的插件来自 magpie 社区（github.com/magpie-community/plugins），由社区作者维护，与 Our Free Model 无关：我们不提供这些插件，也不对其行为负责。'
-      : 'Plugins here come from the magpie community (github.com/magpie-community/plugins) and are maintained by their authors. They are not part of Our Free Model: we do not provide them and are not responsible for them.'
-    if (notice) { if (notice.textContent !== text) notice.textContent = text; return }
-    const note = document.createElement('p')
-    note.className = 'ofm-plugin-source'
-    note.setAttribute('role', 'note')
-    note.textContent = text
-    body.before(note)
-  }
-  const observer = new MutationObserver(brandLabels)
-  observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'title'] })
-  brandLabels()
-}
-
-function engineDisplayControls() {
-  // The remote engine preset bypasses t(). Pass a display-only copy to its
-  // renderer; its id, callbacks and the provider store remain upstream's.
-  if (typeof window.tile !== 'function') return
-  const tile = window.tile
-  window.tile = function (preset) {
-    return tile.call(this, preset?.id === 'remote-magpie' ? {
-      ...preset,
-      name: preset.name.replace(/magpie/gi, 'Our Free Model'),
-      ...(preset.short ? { short: preset.short.replace(/magpie/gi, 'Our Free Model') } : {}),
-    } : preset)
-  }
-}
-
 function rewriteHTML(html, pathname, prefix, mount = MAGPIE_UI_PREFIX) {
   const plugin = pathname.startsWith('/_magpie/plugin/')
   const relativeRoot = plugin ? '../'.repeat(pathname.split('/').filter(Boolean).length - 1) : ''
@@ -599,15 +471,10 @@ function rewriteHTML(html, pathname, prefix, mount = MAGPIE_UI_PREFIX) {
   // inline code (CSP). Their bridge is served unchanged from their token folder.
   if (plugin) return html
   const main = pathname === '/' || pathname === '/index.html'
+  // The host's theme and its own toolbar; the page's own copy, icons and
+  // branding are left exactly as upstream draws them.
   const appearance = main
     ? `<style id="ofm-engine-appearance">${engineAppearanceCSS}</style><script>(${engineAppearanceBridge.toString()})();</script>` : ''
-  if (main) {
-    // Include the bundled pages' dictionaries, registered after core i18n.js.
-    html = html.replace(/<script\b[^>]*\bsrc=(["'])(?:\.\/)?app\.js(?:\?[^"']*)?\1[^>]*>\s*<\/script>/i,
-      match => `<script>(${engineProductCopy.toString()})(${JSON.stringify(brandIcon)});</script>${match}`)
-    html = html.replace(/<script\b[^>]*\bsrc=(["'])(?:\.\/)?start\.js(?:\?[^"']*)?\1[^>]*>\s*<\/script>/i,
-      match => `<script>(${engineDisplayControls.toString()})();</script>${match}`)
-  }
   const injection = `<base href="${prefix}"><script>${browserBridge(prefix, mount)}</script>${appearance}`
   return /<head\b[^>]*>/i.test(html)
     ? html.replace(/<head\b[^>]*>/i, match => match + injection)

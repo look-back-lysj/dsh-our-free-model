@@ -142,19 +142,30 @@ for (const [target, entry] of Object.entries(metadata.binaries)) {
       || !zlib.gunzipSync(compressed, { maxOutputLength: binary.length }).equals(binary)) throw new Error(`分片还原结果不一致：${target}`)
     continue
   }
-  // 旧升级器把清单限制在 80 个文件、每个文件 4 MiB。引擎增大后，普通
-  // gzip -9 会溢出到第 8 个分片，把整个清单顶过 80（非分片文件现有 73 个，
-  // 只容得下 7 个分片）；此时改用 zopfli 重新压缩——仍是标准的 gzip 流，
-  // 只是更省的 DEFLATE 编码，任何 gunzip 都能解开（上面的校验要求的正是
-  // 这一点，不是某个特定压缩器）。zopfli 压 70+ MB 需要几分钟，只在溢出
-  // 时发生。
+  // 旧升级器把清单限制在 80 个文件、每个文件 4 MiB。分片预算按实际发布集
+  // 现算：80 减去清单里的非分片文件数，就是还能放几个分片。引擎变大会把
+  // 这个数字顶小，普通 gzip -9 可能溢出预算；此时改用 zopfli 重新压缩——
+  // 仍是标准的 gzip 流，只是更省的 DEFLATE 编码，任何 gunzip 都能解开（上面
+  // 的校验要求的正是这一点，不是某个特定压缩器）。zopfli 压 70+ MB 需要
+  // 几分钟，只在溢出时发生。
+  const manifestFiles = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).files
+  const countFiles = rel => {
+    const absolute = path.join(root, rel)
+    if (!fs.statSync(absolute).isDirectory()) return 1
+    return fs.readdirSync(absolute).filter(name => !name.startsWith('.') && name !== 'node_modules')
+      .reduce((sum, name) => sum + countFiles(`${rel}/${name}`), 0)
+  }
+  const plainFiles = 1 + manifestFiles.filter(rel => rel !== 'src/engine-parts')
+    .reduce((sum, rel) => sum + countFiles(rel), 0)
+  const partSlots = 80 - plainFiles
+  if (partSlots <= 0) throw new Error(`发布集已有 ${plainFiles} 个非分片文件，旧升级器放不下任何引擎分片`)
   let compressed = zlib.gzipSync(binary, { level: 9 })
-  const partBudget = 7 * 4 * 1024 * 1024
+  const partBudget = partSlots * 4 * 1024 * 1024
   if (compressed.length > partBudget) {
     const mod = await import('@gfx/zopfli')
     const gzipAsync = mod.gzipAsync ?? mod.default?.gzipAsync
     compressed = await gzipAsync(binary, { numiterations: 15 })
-    if (compressed.length > partBudget) throw new Error(`zopfli 压缩后仍超出 7 个分片的 4 MiB 预算：${compressed.length}`)
+    if (compressed.length > partBudget) throw new Error(`zopfli 压缩后仍超出 ${partSlots} 个分片的 4 MiB 预算：${compressed.length}`)
   }
   const parts = []
   for (let offset = 0; offset < compressed.length; offset += 4 * 1024 * 1024) {

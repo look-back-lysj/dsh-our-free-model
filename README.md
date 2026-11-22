@@ -383,7 +383,7 @@ src/local-optimize.js 五个本地应答：额度探测、命令前缀、会话�
 src/combos.js 降级链：虚拟清单行、两种策略、容量取交集
 src/route/classify.js 全车道统一的失败词汇与冷却策略
 src/trust.js 插件路由的请求信任围栏（connection 服务桥 + 结构化围栏）
-src/push.js SSE 推送枢纽：公告到达、更新可用、升级完成
+index.js SSE 推送枢纽（createPushHub，原 src/push.js 已并入）：公告到达、更新可用、升级完成
 src/feed.js 远程公告 feed：多源拉取、校验、缓存、到达检测
 src/updater.js 应用内升级：清单校验、SHA-256 分级校验、备份、原子替换、回滚
 src/reload.js 自热重载：镜像内核 HMR 的缓存清除 + 重导入 + 重注册 + 回滚序列

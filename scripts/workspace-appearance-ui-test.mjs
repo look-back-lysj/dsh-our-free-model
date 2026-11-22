@@ -121,9 +121,9 @@ try {
         await frame.locator(`#view-${view}`).waitFor({ state: 'visible' })
         await frame.locator(`#view-${view}[aria-busy=true]`).waitFor({ state: 'hidden' })
         if (view === 'routing') {
-          await frame.locator('.rt-hub > b').filter({ hasText: 'Our Free Model' }).waitFor()
-          assert.equal(await frame.locator('.rt-hub > svg.rt-bird').count(), 0)
-          assert.equal(await frame.locator('.rt-hub > img.ofm-brand-icon').count(), 1)
+          await frame.locator('.rt-hub > b').filter({ hasText: 'magpie' }).waitFor()
+          await frame.locator('.rt-hub > svg.rt-bird').waitFor()
+          assert.equal(await frame.locator('.rt-hub > img.ofm-brand-icon').count(), 0)
         }
         if (view === 'providers') {
           await frame.locator('#addSheet input.find').waitFor({ state: 'visible' })

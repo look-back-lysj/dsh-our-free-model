@@ -45,7 +45,7 @@
  * @module src/anthropic.js
  */
 
-import { carryFailure, forwardFailure } from './failure.js'
+import { carryFailure, forwardFailure } from './http.js'
 
 /** The plugin ships no tokenizer; the estimate below charges one token per
  *  four characters, the usual English-prose ratio, and a flat cost for each
