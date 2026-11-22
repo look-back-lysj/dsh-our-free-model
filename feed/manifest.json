@@ -1,7 +1,7 @@
 {
   "version": "2.9.0",
   "base": "../",
-  "publishedAt": "2026-11-22T08:15:37.351Z",
+  "publishedAt": "2026-11-22T09:19:27.118Z",
   "notes": "",
   "files": [
     {
@@ -36,8 +36,8 @@
     },
     {
       "path": "LICENSE",
-      "size": 13591,
-      "sha256": "1ce0e372cd0a132b9c4fb346eafdde0cd0acd82b8eadda4d9f4b8d54b4998381"
+      "size": 14219,
+      "sha256": "e2b9138f1495330ad08c8b9e804144d0e8da4e2d11425944abd0e0847792969b"
     },
     {
       "path": "locale/en.json",
@@ -405,5 +405,5 @@
       "sha256": "0d4659c87afb6fa01dd291ae32e1d759cd248126eb95e392753ce3a4c48c3560"
     }
   ],
-  "signature": "ui6XwdiCwYTPqegPkJuJZn9Y67VsMy27EZYHDYKtfahHqpfvAIGzmLcFJEHITRSjsVbiQ+Fqu/sk9jePzcENAQ=="
+  "signature": "zngK7rgM8J4aHMgwjzQgEzmiQ9VLHXH2VvJFBJzYNkn4WdXZOUKDxKbY+6BIkjEHfauBnZoEilihbUm+pTD4Bw=="
 }
