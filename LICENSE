@@ -215,19 +215,22 @@ names, provider endpoints, protocol formats. Facts are not copyrightable and imp
 published protocol is not copying an implementation of it. Credited in the acknowledgements
 list in `README.md`.
 
-| Project | Licence |
-| --- | --- |
-| models.dev | MIT |
-| 9router | MIT |
-| trae-mate | MIT |
-| dsh-cline-pass | MIT |
+| Project | Licence | What this project encodes from it |
+| --- | --- | --- |
+| models.dev | MIT | Model windows, output ceilings, thinking tiers — the catalogue data itself. |
+| 9router | MIT | Provider ids and endpoints in `src/providers/registry.json` (15 of its 76 entries name it as a source), plus the free lane's request shape, which was measured off the wire. |
+
+Two further projects are named in `README.md`'s acknowledgements for their historical
+contribution to the TRAE and Cline channels (`trae-mate`, `dsh-cline-pass`, both MIT). No
+identifier, constant or text from either appears in this repository any more; they are
+recorded because they informed an implementation that has since been rewritten.
 
 ## Historical implementation sources — licence texts not bundled here
 
-Three projects informed the free lane's request shaping before it was rewritten. None of
-their code is vendored here, and the implementations that remain have since been rewritten
-against the wire behaviour rather than against their source. What survives is behaviour and
-vocabulary, not text.
+Three projects informed the free lane's request shaping and the tool-output filters before
+those were rewritten. None of their code is vendored here, and the implementations that
+remain have since been rewritten against the wire behaviour rather than against their
+source. What survives is behaviour and vocabulary, not text.
 
 | Project | Licence | What remains |
 | --- | --- | --- |

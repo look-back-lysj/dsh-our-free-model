@@ -782,18 +782,21 @@ DeepSeek Harness 桌面端（Electron 壳）与 DSH Tauri：使用内核提供�
 感谢 Jet（iJetLi）的渠道包（`vendor/channel-pack/`，MIT；上游仓库 [dsh-providers-hub](https://github.com/iJetLi/dsh-providers-hub)）——
 十个内置账号渠道的登录、账号池与本地网关都出自这里，许可证与出处见该目录下的 LICENSE 与 NOTICE.md。
 
-也感谢这些项目的代码或数据：
+也感谢这些项目：
 
-- [opencode2api](https://github.com/jasonxu114514/opencode2api)（GPL-3.0）：历史免费车道请求整形来源；2.8.6 的实现变化和已删除资产见 [维护说明](src/o2a/SYNC.md)。
-- [free-claude-code](https://github.com/Alishahryar1/free-claude-code)（AGPL-3.0-only）：历史供应商目录及五个本地应答的来源；2.8.6 重写本地应答并重建目录，历史 ID 的处理见 [兼容说明](docs/provider-compatibility.md)。
-- [9router](https://github.com/decolua/9router)（MIT）：部分提供商目录、免费车道的请求形状参考，以及 `scripts/probes/` 下 8 个取证脚本的原始来源——那 8 个文件是逐字副本（只改了探测的 base URL），文件头保留了 MIT 归属，许可证全文见 [LICENSE](LICENSE#9router--mit)。它们 import 9router 自己的模块，只在该项目的 checkout 内可运行，不进发行集。
-- [models.dev](https://github.com/anomalyco/models.dev)（MIT）：模型窗口、输出上限与思考档位。
-- [trae-mate](https://github.com/luckymiaow/trae-mate)（MIT）：TRAE 签到流程参考。
-- [dsh-cline-pass](https://github.com/codeOct/dsh-cline-pass)（MIT）：Cline 额度与请求记录参考。
-- [rtk](https://github.com/rtk-ai/rtk)（CLI Apache-2.0，engine BUSL-1.1）：工具输出过滤器的历史参考；2.8.6 的替换范围和行为对照见 [验证记录](docs/verification/2026-11-18-independent-core.md)。
+- [models.dev](https://github.com/anomalyco/models.dev)（MIT）：模型窗口、输出上限与思考档位。目录数据按 MIT 使用，许可证全文见 [LICENSE](LICENSE)。
+- [9router](https://github.com/decolua/9router)（MIT）：`scripts/probes/` 下 8 个取证脚本的原始来源——那 8 个文件是逐字副本（只改了探测的 base URL），文件头保留了 MIT 归属，许可证全文见 [LICENSE](LICENSE#9router--mit)。它们 import 9router 自己的模块，只在该项目的 checkout 内可运行，不进发行集。
 - [magpie-muse-web](https://github.com/JohnWangggg/magpie-muse-web)（上游未声明 SPDX 许可证）：`muse-web` 桥接扩展的上游。
 
-根目录的 MIT 只覆盖 OFM 自己写的代码；上面这些组件和数据按各自许可证提供，完整条款以上游 LICENSE 为准。这份名单是来源记录，不改变任何组件的许可证。
+**以下项目在本仓库里不再有任何代码或数据**，只作为历史记录保留：
+
+- [opencode2api](https://github.com/jasonxu114514/opencode2api)（GPL-3.0）：免费车道请求整形的最早参考。2.8.6 已把相关实现重写并删除其资产，当前代码与该项目的文件没有共享文本、函数名或常量表；现在只按 [sst/opencode](https://github.com/sst/opencode) v2.2.3（MIT）生成的官方资产工作，见 [维护说明](src/o2a/SYNC.md)。
+- [free-claude-code](https://github.com/Alishahryar1/free-claude-code)（AGPL-3.0-only）：供应商目录与五个本地应答的最早参考。2.8.6 重写本地应答、按 models.dev 重建目录；只剩五个优化 id 与部分 provider id 作为**持久化配置键**沿用（改名会让用户已关掉的开关静默复活），见 [兼容说明](docs/provider-compatibility.md)。
+- [trae-mate](https://github.com/luckymiaow/trae-mate)（MIT）：TRAE 签到流程的早期参考，已被重写取代。
+- [dsh-cline-pass](https://github.com/codeOct/dsh-cline-pass)（MIT）：Cline 额度与请求记录的早期参考，已被重写取代。
+- [rtk](https://github.com/rtk-ai/rtk)（CLI Apache-2.0，engine BUSL-1.1）：工具输出过滤器的最早参考。`src/token-saver/compact/` 已全部重写，仅保留 RTK 的输出标记与阈值——那些标记是模型读惯的线格式，改掉会改变模型行为而不是让代码更原创。2.8.6 的替换范围见 [验证记录](docs/verification/2026-11-18-independent-core.md)。
+
+根目录的 MIT 只覆盖 OFM 自己写的代码；上面仍在使用的组件和数据按各自许可证提供，完整条款以上游 LICENSE 为准。这份名单是来源记录，不改变任何组件的许可证。
 
 ## Star 趋势
 
