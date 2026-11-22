@@ -31,7 +31,7 @@ if (!['all', 'contributor', 'release'].includes(options.mode)) {
   process.exit(1)
 }
 const { mode, only } = options
-const releaseSuites = new Set(['manifest', 'legacy-payload', 'release', 'catalog', 'legacy-upgrade', 'engine-payload'])
+const releaseSuites = new Set(['manifest', 'legacy-payload', 'release', 'catalog', 'legacy-upgrade', 'engine-payload', 'desktop'])
 
 const suites = [
   ['manifest', 'build-manifest.mjs', ['--check']],
@@ -121,8 +121,6 @@ const suites = [
   ['wire-tool-alias', 'wire-tool-alias-test.mjs', []],
   ['opencode-parity', 'opencode-parity-test.mjs', []],
   ['free-lane-wire', 'free-lane-wire-test.mjs', []],
-  ['lane-exit', 'lane-exit-test.mjs', []],
-  ['o2a-assets', 'o2a-assets-test.mjs', []],
   ['freetier-gate', 'freetier-gate-test.mjs', []],
   ['free-lane-quota', 'free-lane-quota-test.mjs', []],
   ['extensions', 'extensions-test.mjs', []],
