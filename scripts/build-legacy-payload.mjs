@@ -49,6 +49,12 @@ const o2aInlineAssets = {
     build.onLoad({ filter: /o2a[\\/]asset-source\.js$/ }, () => ({
       loader: 'js',
       contents: [
+        '/*!',
+        ' * The two assets below are verbatim copies of the OpenCode client\'s system',
+        ' * prompt and tool contracts (sst/opencode, MIT, tag v2.2.3). Their licence',
+        ' * text ships in LICENSE. Do not edit them by hand: the free',
+        ' * tier fingerprints these bytes.',
+        ' */',
         '// 由 scripts/build-legacy-payload.mjs 生成：发布 bundle 的内联资产；开发形态见 src/o2a/asset-source.js。',
         `export const OFFICIAL_PROMPT_V2 = ${JSON.stringify(fs.readFileSync(path.join(root, 'src/o2a/assets/ofm-agent-context.txt'), 'utf8'))}`,
         `export const OFFICIAL_TOOLS_V2 = ${JSON.stringify(fs.readFileSync(path.join(root, 'src/o2a/assets/ofm-tool-contracts.json'), 'utf8'))}`,

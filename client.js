@@ -170,6 +170,35 @@ window.__ModuleLoader__.load({
         'section.forwardHint': '让其它本地工具用一个 base URL 调用这些模型。',
         'section.egress': '出口代理（订阅分流）',
         'section.egressHint': '把推理与探测请求从代理出口发出，缓解按 IP 的频率限制。',
+        'section.laneExits': '免费车道专属出口',
+        'section.laneExitsHint': '只让 OpenCode 免费车道走这些出口，其它流量不受影响。免费额度按出口 IP 计数——一个出口被限流时，车道会在同一回合里换下一个。',
+        'laneLock.title': '免费车道被本地锁住',
+        'laneLock.quota': '这个出口在 {since} 收到过一次 429，插件正在本地拒绝所有免费车道请求，直到 {until}。',
+        'laneLock.locked': '这个出口在 {since} 收到过一次客户端闸门拒绝（403），插件会一直本地拒绝，直到出口改变或你手动解除。',
+        'laneLock.stale': '上游可能早就恢复了。上面那次判定只代表当时那一刻——解除后下一回合会重新真实请求，若墙还在会立刻重新锁上，不会白烧配额。',
+        'laneLock.release': '解除车道锁定',
+        'laneLock.releasing': '解除中…',
+        'laneLock.released': '已解除。下一次请求会重新真实打向上游。',
+        'laneLock.failed': '解除失败：{message}',
+        'laneLock.hint': '这一层是本插件自己的保护，不是上游返回的错误。它存在的理由是：真的撞墙时不必每回合都等一轮超时。',
+        'laneExits.list': '出口地址（一行一条）',
+        'laneExits.placeholder': 'http://127.0.0.1:7890\nsocks5://127.0.0.1:1080\nhttp://127.0.0.1:7891#pool',
+        'laneExits.hint': '支持 http / https / socks5 / socks5h。地址后加 #pool（或前缀 pool+）表示轮换池端点：每次连接都换 IP，因此不会被冷却。留空则依次回落到全局出口、系统 HTTP(S)_PROXY、直连。',
+        'laneExits.maxTries': '每回合最多换几个出口',
+        'laneExits.maxTriesHint': '1–8。只在出口被限流（429）或 IP 被标记滥用（403）时才换——请求本身有问题时不会白跑其它出口。',
+        'laneExits.apply': '应用出口',
+        'laneExits.none': '未配置专属出口',
+        'laneExits.status': '状态',
+        'laneExits.ok': '可用',
+        'laneExits.cooling': '冷却中（{seconds}s）',
+        'laneExits.pool': '轮换池',
+        'laneExits.test': '测试',
+        'laneExits.testing': '测试中…',
+        'laneExits.testOk': '出口 IP：{ip}',
+        'laneExits.testFail': '测试失败：{message}',
+        'laneExits.clear': '清除冷却',
+        'laneExits.cleared': '已清除 {count} 个出口的冷却',
+        'laneExits.never': '地址按凭据对待：只存在本机设置里，面板不回显已保存的值，改动请整段重新粘贴。',
         'egress.enabled': '启用出口',
         'egress.modeSubscription': '订阅模式（本地 mihomo 自动测速分流）',
         'egress.url': '订阅 / 代理 URL',
@@ -1056,6 +1085,35 @@ window.__ModuleLoader__.load({
         'section.forwardHint': 'Let other local tools reach these models through one base URL.',
         'section.egress': 'Egress outlet (subscription routing)',
         'section.egressHint': 'Send inference and probe traffic through a proxy outlet to ease per-IP rate limits.',
+        'section.laneExits': 'Free-lane exits',
+        'section.laneExitsHint': 'Route only the OpenCode free lane through these exits; everything else is unaffected. The free allowance is counted per exit IP, so when one is rate-limited the lane moves to the next within the same turn.',
+        'laneLock.title': 'The free lane is held shut locally',
+        'laneLock.quota': 'This exit answered one 429 at {since}, so the plugin is refusing free-lane requests locally until {until}.',
+        'laneLock.locked': 'This exit answered one client-gate refusal (403) at {since}, so the plugin keeps refusing locally until the exit changes or you release it.',
+        'laneLock.stale': 'The upstream may well have recovered already. That verdict describes one moment; releasing sends the next turn upstream for real, and if the wall is still there it re-locks immediately at no quota cost.',
+        'laneLock.release': 'Release the lane lock',
+        'laneLock.releasing': 'Releasing…',
+        'laneLock.released': 'Released. The next request goes upstream for real.',
+        'laneLock.failed': 'Release failed: {message}',
+        'laneLock.hint': 'This layer is the plugin\'s own protection, not an error the upstream returned. It exists so a real wall costs one timed-out turn instead of every turn.',
+        'laneExits.list': 'Exit addresses (one per line)',
+        'laneExits.placeholder': 'http://127.0.0.1:7890\nsocks5://127.0.0.1:1080\nhttp://127.0.0.1:7891#pool',
+        'laneExits.hint': 'Accepts http / https / socks5 / socks5h. Add #pool (or the pool+ prefix) to mark a rotating pool endpoint: every connection exits from a different IP, so it is never cooled. Leave empty to fall back to the global outlet, then the system HTTP(S)_PROXY, then direct.',
+        'laneExits.maxTries': 'Exits to try per turn',
+        'laneExits.maxTriesHint': '1–8. Another exit is only tried when one is rate-limited (429) or its IP is flagged for abuse (403) — a request-level failure does not spend the rest of the pool.',
+        'laneExits.apply': 'Apply exits',
+        'laneExits.none': 'No dedicated exit configured',
+        'laneExits.status': 'Status',
+        'laneExits.ok': 'available',
+        'laneExits.cooling': 'cooling down ({seconds}s)',
+        'laneExits.pool': 'rotating pool',
+        'laneExits.test': 'Test',
+        'laneExits.testing': 'testing…',
+        'laneExits.testOk': 'Exit IP: {ip}',
+        'laneExits.testFail': 'Test failed: {message}',
+        'laneExits.clear': 'Clear cooldowns',
+        'laneExits.cleared': 'Cleared the cooldown on {count} exit(s)',
+        'laneExits.never': 'An address is treated as a credential: it lives in this machine\'s settings only, the panel never echoes a saved value, and a change means pasting the whole list again.',
         'egress.enabled': 'Enable outlet',
         'egress.modeSubscription': 'Subscription mode (local mihomo picks the fastest node)',
         'egress.url': 'Subscription / proxy URL',
@@ -3203,14 +3261,35 @@ window.__ModuleLoader__.load({
 
     function ago(ts, locale) {
       if (!ts) return '—'
-      const seconds = Math.max(1, Math.round((Date.now() - ts) / 1000))
       const zh = String(locale ?? '').toLowerCase().startsWith('zh')
+      // A future timestamp is a deadline, not an age: the lane breaker's
+      // `retryAt` is in the future by definition, and reading it through the
+      // past-tense branch printed "1 秒前" for a window still nineteen hours
+      // out. `until(…)` below is the honest reading of the same instant.
+      if (ts > Date.now()) return until(ts, locale)
+      const seconds = Math.max(1, Math.round((Date.now() - ts) / 1000))
       if (seconds < 60) return zh ? `${seconds} 秒前` : `${seconds}s ago`
       const minutes = Math.round(seconds / 60)
       if (minutes < 60) return zh ? `${minutes} 分钟前` : `${minutes}m ago`
       const hours = Math.round(minutes / 60)
       if (hours < 24) return zh ? `${hours} 小时前` : `${hours}h ago`
       return zh ? `${Math.round(hours / 24)} 天前` : `${Math.round(hours / 24)}d ago`
+    }
+
+    /** Count forward to a deadline: "还有 19 小时" / "in 19h". */
+    function until(ts, locale) {
+      if (!ts) return '—'
+      const zh = String(locale ?? '').toLowerCase().startsWith('zh')
+      // Floor, not round: a deadline 90 minutes out is "1 小时后", and rounding
+      // it up to "2 小时后" would overstate the wait by up to half a unit. `ago`
+      // rounds because an age is a summary; a countdown is a promise.
+      const seconds = Math.max(1, Math.floor((ts - Date.now()) / 1000))
+      if (seconds < 60) return zh ? `${seconds} 秒后` : `in ${seconds}s`
+      const minutes = Math.floor(seconds / 60)
+      if (minutes < 60) return zh ? `${minutes} 分钟后` : `in ${minutes}m`
+      const hours = Math.floor(minutes / 60)
+      if (hours < 24) return zh ? `${hours} 小时后` : `in ${hours}h`
+      return zh ? `${Math.floor(hours / 24)} 天后` : `in ${Math.floor(hours / 24)}d`
     }
 
     function copy(text, done) {
@@ -4722,6 +4801,141 @@ window.__ModuleLoader__.load({
         running ? h('div', { className: 'ofm_row' },
           h('span', { className: 'ofm_note' }, t('egress.latency')),
           statusLine(latencyMs > 0 ? `${(latencyMs / 1000).toFixed(2)}s` : t('egress.measuring'))) : null)
+    }
+
+    /**
+     * The free lane's own exit pool.
+     *
+     * The free tier counts its allowance per egress IP, so a burned address
+     * answers every request with a multi-hour `Retry-After`. This panel is how
+     * the owner gives the lane somewhere else to go: a list of exits, each with
+     * its live cooldown, a per-exit "test" that reports the public IP the lane
+     * would leave from, and a "clear cooldowns" button for when the upstream has
+     * lifted a block.
+     *
+     * Addresses are credentials — a proxy URL routinely carries userinfo — so the
+     * panel never renders a saved value. Editing means pasting the whole list
+     * again, which is the same trade the global outlet makes.
+     */
+    function LaneExits(props) {
+      const { summary, t, onApply, busy } = props
+      const freeLane = summary?.freeLane ?? {}
+      const exits = Array.isArray(freeLane.exits) ? freeLane.exits : []
+      const configured = freeLane.proxyConfigured === true
+      const [draft, setDraft] = useState('')
+      const [maxTries, setMaxTries] = useState(Number(freeLane.maxTries) || 3)
+      const [pending, setPending] = useState('')
+      const [note, setNote] = useState('')
+      const [ipByExit, setIpByExit] = useState({})
+      const locked = busy === true || pending !== ''
+
+      useEffect(() => { setMaxTries(Number(freeLane.maxTries) || 3) }, [freeLane.maxTries])
+
+      const lines = () => draft.split('\n').map(line => line.trim()).filter(line => line !== '')
+
+      const apply = () => {
+        // An empty box with exits already saved would otherwise read as "clear
+        // them", so an empty draft keeps the stored list untouched.
+        const patch = { maxTries: Number(maxTries) || 3 }
+        const next = lines()
+        if (next.length > 0) patch.proxies = next
+        onApply({ freeLane: patch })
+        setDraft('')
+        setNote('')
+      }
+
+      const test = async index => {
+        setPending(`test:${index}`)
+        setNote('')
+        try {
+          const payload = await post('/lane/echo', { proxy: exits[index].label })
+          setIpByExit(current => ({ ...current, [index]: String(payload?.ip ?? '') }))
+        } catch (error) {
+          setIpByExit(current => ({ ...current, [index]: '' }))
+          setNote(t('laneExits.testFail').replace('{message}', String(error?.message ?? error).slice(0, 120)))
+        } finally {
+          setPending('')
+        }
+      }
+
+      const clearAll = async () => {
+        setPending('clear')
+        try {
+          const payload = await post('/lane/clear')
+          // `/lane/clear` answers both halves: `exits` is how many exit
+          // cooldowns went away, `cleared` whether the lane breaker itself was
+          // released. Reporting only the exit count said "cleared 0 exit(s)"
+          // while doing the one thing the user asked for.
+          const released = payload?.cleared === true
+          setNote(released
+            ? t('laneLock.released')
+            : t('laneExits.cleared').replace('{count}', String(payload?.exits ?? 0)))
+          summary.reload?.()
+        } catch (error) {
+          setNote(t('laneExits.testFail').replace('{message}', String(error?.message ?? error).slice(0, 120)))
+        } finally {
+          setPending('')
+        }
+      }
+
+      const stateOf = exit => {
+        if (exit.coolingMs > 0) return t('laneExits.cooling').replace('{seconds}', String(Math.ceil(exit.coolingMs / 1000)))
+        if (exit.pool === true) return t('laneExits.pool')
+        return t('laneExits.ok')
+      }
+
+      return h(Panel, null,
+        configured && exits.length > 0
+          ? h('div', { className: 'ofm_sec', style: { gap: 6 } },
+            ...exits.map((exit, index) => h('div', { className: 'ofm_row', key: `${exit.label}:${index}` },
+              h('span', { className: 'ofm_note', style: { minWidth: 200 } }, t('laneExits.status')),
+              h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 180 } }, exit.label),
+              h('span', { className: 'ofm_pill' },
+                h('span', { className: `ofm_dot ${exit.coolingMs > 0 ? 'err' : 'ok'}` }),
+                stateOf(exit)),
+              h(Button, { kind: 'ghost', disabled: locked, onClick: () => test(index) },
+                pending === `test:${index}` ? t('laneExits.testing') : t('laneExits.test')),
+              ipByExit[index]
+                ? h('span', { className: 'ofm_note' }, t('laneExits.testOk').replace('{ip}', ipByExit[index]))
+                : null,
+              exit.lastError ? h('span', { className: 'ofm_note' }, exit.lastError) : null)))
+          : h('div', { className: 'ofm_note' }, t('laneExits.none')),
+        field(t('laneExits.list'), h('textarea', {
+          className: 'ofm_input',
+          style: { flex: 1, minWidth: 320, minHeight: 76, fontFamily: 'monospace' },
+          value: draft,
+          placeholder: t('laneExits.placeholder'),
+          disabled: locked,
+          onChange: event => setDraft(event.target.value),
+        })),
+        h('div', { className: 'ofm_note' }, t('laneExits.hint')),
+        h('div', { className: 'ofm_row' },
+          field(t('laneExits.maxTries'), h('input', {
+            className: 'ofm_input',
+            style: { maxWidth: 90 },
+            inputMode: 'numeric',
+            value: maxTries,
+            disabled: locked,
+            onChange: event => setMaxTries(Number(String(event.target.value).replace(/\D/g, '')) || 1),
+          })),
+          h('span', { className: 'ofm_note' }, t('laneExits.maxTriesHint'))),
+        h('div', { className: 'ofm_row' },
+          h(Button, { kind: 'primary', disabled: locked || lines().length === 0, onClick: apply }, t('laneExits.apply')),
+          // Enabled when there is an exit to cool down OR a breaker to release.
+          // The old condition was `exits.every(exit => exit.coolingMs === 0)`,
+          // and `[].every(…)` is `true`: with no lane exits configured — the
+          // default, and the state the user in front of a locked lane is in —
+          // the only control that clears the lock was permanently greyed out.
+          // `/lane/clear` clears both, so the button's own name is the only
+          // thing the exit list should govern. `summary` is the `useAsync`
+          // wrapper, so the gate lives under `.data` (same bug as the banner).
+          h(Button, {
+            kind: 'ghost',
+            disabled: locked || (exits.every(exit => exit.coolingMs === 0) && (summary?.data ?? summary)?.laneGate?.ok !== false),
+            onClick: clearAll,
+          }, t('laneExits.clear'))),
+        note ? h('div', { className: 'ofm_note', role: 'status' }, note) : null,
+        h('div', { className: 'ofm_note' }, t('laneExits.never')))
     }
 
     const field = (label, control) => h('label', { className: 'ofm_field' }, h('span', null, label), control)
@@ -8185,6 +8399,71 @@ window.__ModuleLoader__.load({
           : null)
     }
 
+    /**
+     * The breaker's own banner, and the way out of it.
+     *
+     * The free lane refuses locally while a recorded window is open, and that
+     * refusal is the plugin's idea rather than an error the upstream sent — so
+     * the page has to say so, and has to offer the one action that clears it.
+     * It sits above everything else on this page because a user whose turns all
+     * fail reads the top of the page first, and the previous affordance was
+     * buried in the exits panel and disabled whenever no exit was configured
+     * (`[].every(...)` is `true`), which is exactly the case in which nobody
+     * can clear it.
+     *
+     * `gate.ok !== false` renders nothing: an expired or absent verdict is not
+     * news. The countdown is not a timer that ticks — the page re-reads
+     * `/summary` on the same cadence as the rest of the page, and the release
+     * button reloads it.
+     */
+    function LaneLockBanner(props) {
+      const { t, summary, busy } = props
+      // `summary` here is the `useAsync` wrapper (`{status, data, error,
+      // reload}`), not the response body — `FreePage` receives both, and the
+      // payload lives under `.data`. Reading `summary.laneGate` therefore always
+      // saw `undefined` and the banner never rendered, which is exactly the
+      // report this fixes: a locked lane with no way to see or clear it.
+      // Accept a bare payload too, so the component is not hostage to its caller.
+      const payload = summary?.data ?? summary
+      const gate = payload?.laneGate
+      const [pending, setPending] = useState(false)
+      const [note, setNote] = useState('')
+      if (gate === undefined || gate.ok !== false) return null
+      // Relative wording, deliberately: an absolute clock time invites the user
+      // to compare it against their own clock and timezone, and the interesting
+      // fact is "that was N minutes ago, and it lifts in M minutes".
+      const since = Number.isFinite(gate.since) ? ago(gate.since, t.locale) : '—'
+      const until = Number.isFinite(gate.retryAt) ? ago(gate.retryAt, t.locale) : '—'
+      // The upstream's own words, when the verdict recorded any. They are the
+      // only evidence the user has about *why* this exit was refused, and the
+      // summary sentence above is the plugin's paraphrase of it.
+      const said = typeof gate.message === 'string' && gate.message.trim() !== '' ? gate.message.trim() : ''
+      const release = async () => {
+        setPending(true)
+        setNote('')
+        try {
+          await post('/lane/clear')
+          setNote(t('laneLock.released'))
+          summary.reload?.()
+        } catch (error) {
+          setNote(t('laneLock.failed').replace('{message}', String(error?.message ?? error).slice(0, 140)))
+        } finally {
+          setPending(false)
+        }
+      }
+      return h('div', { className: 'ofm_callout ofm_error', role: 'alert' },
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, flex: 1, minWidth: 0 } },
+          h('strong', null, t('laneLock.title')),
+          h('span', null, (gate.state === 'locked' ? t('laneLock.locked') : t('laneLock.quota'))
+            .replace('{since}', since).replace('{until}', until)),
+          said === '' ? null : h('span', { className: 'ofm_mono', style: { opacity: 0.85, wordBreak: 'break-word' } }, said),
+          h('span', { className: 'ofm_note' }, t('laneLock.stale')),
+          h('span', { className: 'ofm_note' }, t('laneLock.hint')),
+          note === '' ? null : h('span', { className: 'ofm_note', role: 'status' }, note)),
+        h(Button, { kind: 'primary', busy: pending, disabled: busy || pending, onClick: release },
+          pending ? t('laneLock.releasing') : t('laneLock.release')))
+    }
+
     function SponsorBanner({ t }) {
       return h('aside', { className: 'ofm_sponsor_banner', 'aria-label': t('sponsor.bannerTitle') },
         h('div', { className: 'ofm_sponsor_logo', 'aria-hidden': 'true' },
@@ -8206,6 +8485,7 @@ window.__ModuleLoader__.load({
       // 颜色跟随可选比例；实际探测结果仍由下方五格状态独立显示。
       const level = ratio >= 0.6 ? 'ok' : ratio >= 0.3 ? 'busy' : 'over'
       return h('div', { className: 'ofm_page' },
+        h(LaneLockBanner, { t, summary, busy }),
         h(SponsorBanner, { t }),
         h('header', { className: 'ofm_hero ofm_glass' },
           h('div', { className: 'ofm_pagehead' },
@@ -8251,6 +8531,7 @@ window.__ModuleLoader__.load({
             : h('p', { className: 'ofm_note' }, t('loading'))),
         h(Section, { title: t('section.forward'), hint: t('section.forwardHint') }, h(Forward, { settings: data.settings, t, onApply: apply, busy })),
         h(Section, { title: t('section.egress'), hint: t('section.egressHint') }, h(Egress, { settings: data.settings, t, onApply: apply, busy })),
+        h(Section, { title: t('section.laneExits'), hint: t('section.laneExitsHint') }, h(LaneExits, { summary: data, t, onApply: apply, busy })),
         h(Section, { title: t('section.prefs'), hint: t('section.prefsHint') }, h(Preferences, { summary: data, t, onApply: apply, busy })),
         h(Section, { title: t('section.news'), hint: t('section.newsHint') }, h(NewsPanel, { t })))
     }
@@ -9085,6 +9366,14 @@ window.__ModuleLoader__.load({
             let data
             try { data = JSON.parse(event.data) } catch { return }
             for (const item of data.items ?? []) {
+              // `muted` means the host is holding a stale copy of the feed: it
+              // may still list the item, but it may not open a full-screen
+              // modal on the strength of a snapshot that could be out of date.
+              // That is how a retracted urgent announcement (one whose
+              // expiresAt was added after this install cached it) stops
+              // interrupting people. The list entry stays; only the
+              // interruption is withheld.
+              if (item.muted === true) continue
               osNotify(t('toast.annTitle'), item.title)
               if (item.level === 'urgent') {
                 if (urgentShownIds.has(item.id)) continue
@@ -9131,7 +9420,9 @@ window.__ModuleLoader__.load({
         void (async () => {
           try {
             const view = await api('/announcements')
-            const candidates = (view?.items ?? []).filter(item => item.level === 'urgent' && item.acked !== true && urgentShownIds.has(item.id) === false)
+            // `muted` 与上面那条到达推送同义：宿主手里是过期快照，可以继续列
+            // 出条目，但不能凭它弹全屏层。撤销公告正是走这条路生效的。
+            const candidates = (view?.items ?? []).filter(item => item.level === 'urgent' && item.muted !== true && item.acked !== true && urgentShownIds.has(item.id) === false)
             const item = candidates.sort((left, right) => Number(right.createdAt ?? 0) - Number(left.createdAt ?? 0))[0]
             if (item === undefined || disposed === true) return
             urgentShownIds.add(item.id)
@@ -9232,7 +9523,7 @@ window.__ModuleLoader__.load({
     exports.inject = inject
     exports.name = 'our-free-model'
     // Headless test seams use the same stub React as scripts/client-lint.mjs.
-    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, UpgradePanel, useEacLogin, EacAuth, PicksPage, RecoCard, FeedbackPage, DICT, useChannelRpc, Shell, SubscriptionsPage, Disclaimer, CSS, reloadNoticePlan, announceReloadNotice }
+    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, UpgradePanel, useEacLogin, EacAuth, PicksPage, RecoCard, FeedbackPage, DICT, useChannelRpc, Shell, SubscriptionsPage, Disclaimer, CSS, reloadNoticePlan, announceReloadNotice, LaneLockBanner, ago, until }
     return module.exports
   },
 })

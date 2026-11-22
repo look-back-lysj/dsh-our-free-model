@@ -30,18 +30,44 @@ const providerCapacity = policy('overloaded', 'provider', -1)
 const missingModel = policy('unavailable', 'account', COOLDOWN_LONG_MS)
 const transientServer = policy('upstream', 'transient', TRANSIENT_COOLDOWN_MS, true)
 
+/**
+ * What a failure message means, one group per condition.
+ *
+ * The rule is a case-insensitive substring test over the joined message, code and
+ * body. Two things about the ordering are load-bearing and the rest is not:
+ *
+ * - **Between groups**, order decides which verdict wins when a message mentions
+ *   two conditions at once ("rate limit and capacity" is a rate problem, so the
+ *   rate group is consulted first). Reordering the groups changes behaviour.
+ * - **Within a group**, every entry maps to the same verdict, so the order is free.
+ *   The groups are written shortest-phrase-first because that is the order a human
+ *   scanning the list would expect, not because anything depends on it.
+ */
+const TEXT_RULES = new Map([
+  // The credential is missing or rejected: nothing else in the request matters.
+  ...['no credentials'].map(text => [text, accountAuth]),
+  // The account is fine but this action is not permitted for it.
+  ...['request not allowed'].map(text => [text, policy('permission', 'account', COOLDOWN_SHORT_MS)]),
+  // The request is malformed. Retrying it unchanged cannot succeed.
+  ...['improperly formed request'].map(text => [text, policy('invalid_request', 'account', COOLDOWN_LONG_MS)]),
+  // A pace ceiling: wait, then the same request may succeed.
+  ...['too many requests', 'rate limit', 'quota exceeded'].map(text => [text, accountRate]),
+  // A room ceiling: the provider is saturated right now.
+  ...['overloaded', 'capacity'].map(text => [text, providerCapacity]),
+])
+
+/** Status fallback, consulted only when no phrase matched. */
+const STATUS_RULES = new Map([
+  [401, accountAuth],
+  [402, policy('billing', 'account', COOLDOWN_LONG_MS)],
+  [403, accountPermission],
+  [404, missingModel],
+  [429, accountRate],
+])
+
 const ERROR_RULES = [
-  ...[
-    ['no credentials', accountAuth],
-    ['request not allowed', policy('permission', 'account', COOLDOWN_SHORT_MS)],
-    ['improperly formed request', policy('invalid_request', 'account', COOLDOWN_LONG_MS)],
-    ['rate limit', accountRate], ['too many requests', accountRate], ['quota exceeded', accountRate],
-    ['capacity', providerCapacity], ['overloaded', providerCapacity],
-  ].map(([text, rule]) => ({ text, ...rule })),
-  ...[
-    [401, accountAuth], [402, policy('billing', 'account', COOLDOWN_LONG_MS)],
-    [403, accountPermission], [404, missingModel], [429, accountRate],
-  ].map(([status, rule]) => ({ status, ...rule })),
+  ...[...TEXT_RULES].map(([text, rule]) => ({ text, ...rule })),
+  ...[...STATUS_RULES].map(([status, rule]) => ({ status, ...rule })),
 ]
 const CODE_VERDICTS = Object.fromEntries([
   [['aborted'], policy('aborted', 'request', 0)],

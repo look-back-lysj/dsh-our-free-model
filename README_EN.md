@@ -117,7 +117,7 @@ the picker by itself as soon as a probe gets through.
 > If you prefer npm:
 >
 > ```
-> dsh plugin --profile web add @ebony-vinyl/dsh-our-free-model@2.8.9
+> dsh plugin --profile web add @ebony-vinyl/dsh-our-free-model@2.9.0
 > ```
 >
 > Its bundle id carries the scope (`@ebony-vinyl/dsh-our-free-model`), so it cannot
@@ -150,7 +150,7 @@ and installation contract rather than assuming every desktop shell shares this g
 To install manually as a real directory, use a trusted local tarball:
 
 1. Create `<DSH_HOME>/profiles/<profile>/vendor/`. From the reviewed repository, run `npm pack --ignore-scripts --pack-destination "<DSH_HOME>/profiles/<profile>/vendor"`, or place an official same-version release tarball from this repository there. Local packing does not publish to npm.
-2. Add `"dsh-our-free-model": "file:./vendor/dsh-our-free-model-2.8.9.tgz"` to the profile's `package.json` dependencies, then use the host's installation flow to resolve it. Keep the filename version aligned with this repository's `package.json`; do not substitute a same-named npm registry version.
+2. Add `"dsh-our-free-model": "file:./vendor/dsh-our-free-model-2.9.0.tgz"` to the profile's `package.json` dependencies, then use the host's installation flow to resolve it. Keep the filename version aligned with this repository's `package.json`; do not substitute a same-named npm registry version.
 3. Append `"dsh-our-free-model"` to `dsh.profile.bundles`.
 
 When the package manager owns the installed bytes, set `distribution: 'managed'` in the bundle config or plugin `settings.json`. The package manager then handles updates; in-app upgrades, announcement polling and hot reload stand down while model access remains available. For later updates, replace the trusted tarball and update its dependency path so the old lockfile cannot restore an older copy.
@@ -424,7 +424,7 @@ src/token-saver/index.js compaction pipeline: prompt injection -> tool-output co
 src/token-saver/inject.js idempotent injection and stripping on the chat / messages /
                 responses wires
 src/token-saver/prompts.js the caveman and ponytail prompt families and their levels
-src/token-saver/rtk/ tool-output filters: git diff/status/log, grep, find, ls, tree,
+src/token-saver/compact/ tool-output filters: git diff/status/log, grep, find, ls, tree,
                 build logs, numbered dumps, search listings, duplicate log lines
 src/local-optimize.js the five local answers: quota, prefix, title, suggestion, filepath
 src/combos.js fallback chains: virtual catalog rows, two strategies, intersected capacities
@@ -877,4 +877,4 @@ Thanks to [Jet (iJetLi)](https://gitee.com/iJetLi) for the channel pack
 for all ten built-in account channels come from it; its LICENSE and NOTICE.md
 sit in that directory.
 
-Historical sources include [opencode2api](https://github.com/jasonxu114514/opencode2api) (GPL-3.0) for free-lane request shaping, [free-claude-code](https://github.com/Alishahryar1/free-claude-code) (AGPL-3.0-only) for the provider directory and local answers, and [RTK](https://github.com/rtk-ai/rtk) for output compression. See the [2.8.6 verification notes](docs/verification/2026-11-18-independent-core.md) for the replacement scope and [the Chinese acknowledgements](README.md#致谢) for the complete source list.
+Historical sources include [opencode2api](https://github.com/jasonxu114514/opencode2api) (GPL-3.0) for free-lane request shaping, [free-claude-code](https://github.com/Alishahryar1/free-claude-code) (AGPL-3.0-only) for the provider directory and local answers, and [RTK](https://github.com/rtk-ai/rtk) for output compression. Eight scripts under `scripts/probes/` are byte-for-byte copies of [9router](https://github.com/decolua/9router) (MIT) probe scripts with only the probe base URL changed; each carries its MIT attribution in the file header and the full licence is in [LICENSE](LICENSE#9router--mit). They import 9router's own modules, so they run only inside that project's checkout, and they are not part of the release set. See the [2.8.6 verification notes](docs/verification/2026-11-18-independent-core.md) for the replacement scope and [the Chinese acknowledgements](README.md#致谢) for the complete source list.

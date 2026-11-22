@@ -37,7 +37,7 @@ import { STATE } from './src/probe.js'
 import { generateKey, rankLanAddresses, startForwardServer, startLanRelay } from './src/forward.js'
 import { chanGatewayCredential, chanGatewayEnabled, chanGatewayPort, startChanRelay } from './src/chan-relay.js'
 import { CODE, UpstreamError } from './src/http.js'
-import { egressActive, egressFetch, outletLabel, readOutletSelection, startEgressRelay, setFreeLaneProxy, freeLaneProxyActive, laneProxyEcho } from './src/egress.js'
+import { egressActive, egressFetch, outletLabel, readOutletSelection, startEgressRelay, setFreeLaneProxies, setFreeLaneMaxTries, freeLaneProxyActive, freeLaneExitSnapshot, clearLaneExits, laneProxyEcho } from './src/egress.js'
 import { directFetch } from './src/eac.js'
 import { clearEacUser, readEacUser, writeEacUser } from './src/eac-user.js'
 import { createEacLoginPoller } from './src/eac-login.js'
@@ -150,10 +150,11 @@ export function apply(ctx, config) {
 
   // Environment readiness: the official free lane's POST inference needs a
   // local Bun, and a user who never learns that reads only a failed turn.
-  // Probe once at boot — the summary's `bun` bit and this log line are the two
-  // surfaces the answer lives on.
-  const bunAvailable = findBunExecutable() !== undefined
-  if (!bunAvailable) {
+  // The boot probe exists for this one log line; the summary re-reads the
+  // machine on every request, because installing Bun while the process stays
+  // up must clear the warning without a restart.
+  const bunAvailable = () => findBunExecutable() !== undefined
+  if (!bunAvailable()) {
     logger.warn?.('our-free-model: 未检测到本机 Bun —— OpenCode 免费车道无法推理。请安装 Bun（https://bun.sh 或 npm i -g bun）后重启，或把可执行文件路径写入 OUR_FREE_MODEL_BUN。(Bun not found: the OpenCode free lane cannot run inference)')
   }
 
@@ -499,7 +500,7 @@ export function apply(ctx, config) {
     onSealedUnavailable: () => logger.warn?.('our-free-model: the sealed lane is not available in this composition (no recognized host profile); its models stay hidden'),
     onTopology: () => emitTopology(),
   })
-  const { state, adapter, refreshCatalog, refreshAvailability, watchEgress, fetchListing, publicModelRows, syncAggregateCatalog, clearLaneBreaker } = modelRuntime
+  const { state, adapter, refreshCatalog, refreshAvailability, watchEgress, fetchListing, publicModelRows, syncAggregateCatalog, clearLaneBreaker, laneGate } = modelRuntime
   const runForwarded = modelRuntime.complete
 
   // ── registration ────────────────────────────────────────────────────────────
@@ -918,22 +919,27 @@ export function apply(ctx, config) {
     try { await run } finally { if (outletSyncInFlight === run) outletSyncInFlight = null }
   }
   /**
-   * Apply the settings file's lane proxy to the egress layer.
+   * Apply the settings file's lane exit pool to the egress layer.
    *
    * Boot-time sync; the settings route re-applies on every `freeLane` patch
    * through `sanitizeSettings` (which is where a bad address fails the write).
-   * A stored value that no longer parses is dropped with one log line — the
-   * lane falls back to the global outlet rather than failing every turn.
+   * A stored entry that no longer parses is dropped with one log line — the lane
+   * falls back to the global outlet rather than failing every turn.
    */
-  function syncFreeLaneProxy() {
+  function syncFreeLaneProxies() {
+    const lane = settings.get().freeLane ?? {}
+    const proxies = Array.isArray(lane.proxies) ? lane.proxies : []
+    const legacy = String(lane.proxyUrl ?? '').trim()
+    const effective = proxies.length > 0 ? proxies : (legacy === '' ? [] : [legacy])
     try {
-      setFreeLaneProxy(String(settings.get().freeLane?.proxyUrl ?? ''))
+      setFreeLaneProxies(effective)
+      setFreeLaneMaxTries(lane.maxTries)
     } catch (error) {
-      logger.warn?.(`our-free-model: the OpenCode lane proxy address is invalid (${error?.message ?? error}); the lane keeps its current exit`)
-      setFreeLaneProxy('')
+      logger.warn?.(`our-free-model: an OpenCode lane exit address is invalid (${error?.message ?? error}); the lane keeps its current exits`)
+      try { setFreeLaneProxies([]) } catch { /* nothing left to clear */ }
     }
   }
-  syncFreeLaneProxy()
+  syncFreeLaneProxies()
   async function syncEgressOnce() {
     const desired = settings.get().egress ?? {}
     const wanted = desired.enabled === true
@@ -1170,7 +1176,7 @@ export function apply(ctx, config) {
   }
   const api = createApiRoutes({
     settings, stats, availability, catalog: () => modelRuntime.catalog, state,
-    refreshCatalog, refreshAvailability, syncForward, syncRelay, syncEgress, clearLaneBreaker,
+    refreshCatalog, refreshAvailability, syncForward, syncRelay, syncEgress, clearLaneBreaker, laneGate,
     extensions,
     bunAvailable,
     onVisibilityChanged: emitTopology,
@@ -1790,14 +1796,29 @@ function sanitizeSettings(patch, current) {
     next.updateCheckHours = Number.isFinite(hours) && hours >= 0 ? Math.trunc(hours) : (Number(current.updateCheckHours) || 6)
   }
   if (next.freeLane !== undefined) {
-    // The lane proxy is a URL the egress layer validates on save: a typo must
-    // fail the write, not the first turn. Everything else about the object is
-    // carried verbatim.
+    // The lane's exits are addresses the egress layer validates on save: a typo
+    // must fail the write, not the first turn. `proxies` is the pool; `proxyUrl`
+    // is the pre-pool single-address field and is folded in when the list is
+    // empty, so an older settings file keeps working.
     const incoming = next.freeLane
     const merged = { ...(current.freeLane ?? {}), ...(incoming && typeof incoming === 'object' ? incoming : {}) }
     const proxyUrl = String(merged.proxyUrl ?? '').trim()
-    setFreeLaneProxy(proxyUrl)
-    next.freeLane = { ...merged, proxyUrl }
+    const rawProxies = Array.isArray(merged.proxies) ? merged.proxies : []
+    const proxies = rawProxies.map(entry => String(entry ?? '').trim()).filter(entry => entry !== '')
+    const effective = proxies.length > 0 ? proxies : (proxyUrl === '' ? [] : [proxyUrl])
+    // `setFreeLaneProxies` throws on an address it cannot parse, which is the
+    // intended contract: a typo must fail the write. It has to fail as a 400,
+    // though — the generic handler maps a bare throw to 500, and "500" tells the
+    // user the plugin broke rather than that their address is wrong.
+    try {
+      setFreeLaneProxies(effective)
+    } catch (error) {
+      throw httpError(400, String(error?.message ?? error))
+    }
+    const maxTries = Number(merged.maxTries)
+    const tries = Number.isFinite(maxTries) ? Math.min(8, Math.max(1, Math.trunc(maxTries))) : 3
+    setFreeLaneMaxTries(tries)
+    next.freeLane = { ...merged, proxies, proxyUrl, maxTries: tries }
   }
   return next
 }
@@ -2294,14 +2315,20 @@ export function createApiRoutes(deps) {
       }
       if (method === 'POST' && routePath === '/lane/clear') {
         // 换出口后重试一次：出口已变（或用户自备了新出口代理），把额度断路器
-        // 清掉，让下一次手动检测/真实回合重新出发。一次调用只清一次。
+        // 和每个出口的冷却一起清掉，让下一次手动检测/真实回合重新出发。
         const cleared = deps.clearLaneBreaker()
-        return send(200, { ok: true, cleared, ...buildSummary(deps) })
+        const exits = clearLaneExits()
+        return send(200, { ok: true, cleared, exits, ...buildSummary(deps) })
       }
       if (method === 'POST' && routePath === '/lane/echo') {
         // 测试出口：打第三方回显服务，不打免费网关 —— 一次测试不花配额。
+        // 请求体可带 `proxy` 指定测某一条出口；不带则测车道当前会选的那条。
+        const body = await readJson(req).catch(() => ({}))
         try {
-          const echo = await laneProxyEcho({ signal: req.signal ?? undefined })
+          const echo = await laneProxyEcho({
+            signal: req.signal ?? undefined,
+            proxy: typeof body?.proxy === 'string' ? body.proxy : undefined,
+          })
           return send(200, { ok: true, ...echo })
         } catch (error) {
           return send(502, { ok: false, error: String(error?.message ?? error).slice(0, 200) })
@@ -2803,6 +2830,11 @@ function buildSummary(deps) {
   const update = deps.update.status()
   const feedView = deps.announcements.view()
   const defaultMaxTokens = deps.settings.get().defaultMaxTokens
+  // Read per summary, not captured at boot: a process that outlived the Bun
+  // installation must stop claiming the transport is unavailable. A plain
+  // boolean is still accepted for compositions and tests that predate the
+  // function form.
+  const bunReady = typeof deps.bunAvailable === 'function' ? deps.bunAvailable() : deps.bunAvailable !== false
   // Lanes that carry no availability verdict of their own. The absorbed channels
   // and the aggregate lane are named by a listing round that already succeeded,
   // and a combo is a view over rows that were themselves named — none of them is
@@ -2813,7 +2845,7 @@ function buildSummary(deps) {
       ...entry,
       hiddenByUser: isModelHidden(entry, state.settings),
       hiddenByGroup: isModelHidden(entry, { ...state.settings, hiddenModelIds: [] }),
-      ...modelAvailability(entry.id, snapshot, unprobed(entry)),
+      ...modelAvailability(entry.id, snapshot, unprobed(entry), { bunAvailable: bunReady }),
       // What each rung of the effort menu will really put on the wire for this
       // model, so the page never shows a 32K "output ceiling" beside a call that
       // was cut off at 8K. A model with no effort menu has no ladder to show;
@@ -2832,15 +2864,29 @@ function buildSummary(deps) {
     // renders as the countdown / lock banner, and the proxy seam issue #708's
     // bypass reduces to. `lane` is null until a real verdict exists.
     lane: snapshot.lane ?? null,
+    // The breaker's own verdict, evaluated now: `{ok: true}` unless a recorded
+    // window is still open. The raw `lane` row above says what was recorded
+    // (and when); this says whether it still binds, so the page can decide
+    // whether to offer the release button without re-deriving the rules. It is
+    // also where the 30-minute read-side clamp shows up: an oversized window
+    // written by an older build reports as open only until `retryAt` here.
+    laneGate: deps.laneGate?.() ?? { ok: true },
     freeLane: {
       proxyActive: freeLaneProxyActive(),
-      proxyConfigured: String(deps.settings.get().freeLane?.proxyUrl ?? '').trim() !== '',
+      proxyConfigured: (Array.isArray(deps.settings.get().freeLane?.proxies) && deps.settings.get().freeLane.proxies.length > 0)
+        || String(deps.settings.get().freeLane?.proxyUrl ?? '').trim() !== '',
+      // The configured exits with their live cooldown, so the page can show
+      // which route is spent and for how long. Labels are masked (protocol, host,
+      // port only) — an exit URL routinely carries credentials in its userinfo.
+      exits: freeLaneExitSnapshot(),
+      maxTries: Number(deps.settings.get().freeLane?.maxTries) || 3,
       transport: process.env.OUR_FREE_MODEL_FREE_TRANSPORT ?? 'auto',
     },
     // Environment readiness for the free lane: the official POST inference
     // needs a local Bun, and a user who never learns that reads only a failed
-    // turn. Probed once at boot (see the readiness effect below).
-    bun: deps.bunAvailable !== false,
+    // turn. Re-probed on each summary read (see `bunReady` above), so the pill
+    // disappears as soon as the executable is installed.
+    bun: bunReady,
     probedAt: snapshot.at ?? 0,
     announcementVersion: ANNOUNCEMENT_VERSION,
     disclaimerVersion: DISCLAIMER_VERSION,

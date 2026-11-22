@@ -734,3 +734,42 @@ label.settings-field { cursor: pointer; }
   .settings-toggle:active:not(:disabled)::after { transform: none !important; }
   .settings-toggle:checked:active:not(:disabled)::after { transform: translateX(17px) !important; }
 }
+
+/* The free lane's exit pool. The textarea takes the full field width because an
+   exit list is one address per line; the list of live exits is monospace so the
+   masked labels line up. */
+.settings-textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.settings-textarea:focus-visible {
+  outline: 2px solid var(--ring, var(--accent));
+  outline-offset: 1px;
+}
+
+.settings-exit-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-exit-list code {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  font-size: 12px;
+}

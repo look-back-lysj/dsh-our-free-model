@@ -210,6 +210,12 @@ var FALLBACK_CATALOG = buildCatalog([
   "flint-40b-free"
 ]);
 var LANE_QUOTA_DEFAULT_MS = 6 * 60 * 60 * 1e3;
+var LANE_QUOTA_MAX_MS = 30 * 60 * 1e3;
+function laneWindowFor(retryAfterMs) {
+  const asked = Number(retryAfterMs);
+  if (!Number.isFinite(asked) || asked <= 0) return LANE_QUOTA_DEFAULT_MS;
+  return Math.min(Math.trunc(asked), LANE_QUOTA_MAX_MS);
+}
 function createRuntimeStores({ dataDir, logger = console }) {
   if (typeof dataDir !== "string" || !path.isAbsolute(dataDir)) {
     throw new TypeError("dataDir must be an absolute path");
@@ -258,7 +264,9 @@ function createModelRuntime({
   extensionRuntime = null
 }) {
   let catalog = materializeCatalog(catalogStore.get().entries ?? []);
-  let sealedCatalog = sealedCredential() === null ? [] : buildEacCatalog(catalogStore.get().sealIds ?? []);
+  let sealedCatalog = sealedCredential() === null ? [] : buildEacCatalog(
+    (catalogStore.get().sealIds ?? []).filter((id) => typeof id === "string" && id !== "" && !id.includes("[object "))
+  );
   let kiloCatalog = reviveKiloCatalog(catalogStore.get().kiloRows);
   let aggregateCatalog = [];
   let subscriptionEntries = [];
@@ -325,10 +333,13 @@ function createModelRuntime({
     if (!lane || lane.state === "ok" || lane.state === void 0) return { ok: true };
     if (lane.state === "quota") {
       if (!Number.isFinite(lane.retryAt) || lane.retryAt <= Date.now()) return { ok: true };
-      return { ok: false, state: "quota", retryAt: lane.retryAt, message: lane.message ?? "" };
+      const recorded = Number.isFinite(lane.at) ? lane.at : lane.retryAt;
+      const retryAt = Math.min(lane.retryAt, recorded + LANE_QUOTA_MAX_MS);
+      if (retryAt <= Date.now()) return { ok: true };
+      return { ok: false, state: "quota", retryAt, since: lane.at, message: lane.message ?? "" };
     }
     if (lane.state === "locked") {
-      return { ok: false, state: "locked", message: lane.message ?? "" };
+      return { ok: false, state: "locked", since: lane.at, message: lane.message ?? "" };
     }
     return { ok: true };
   }
@@ -358,8 +369,7 @@ function createModelRuntime({
     }
     const code = error?.code;
     if (code === CODE.quota) {
-      const retryAfter = Number(error?.providerRetryAfterMs);
-      const retryAt = Number.isFinite(retryAfter) && retryAfter > 0 ? Date.now() + retryAfter : Date.now() + LANE_QUOTA_DEFAULT_MS;
+      const retryAt = Date.now() + laneWindowFor(error?.providerRetryAfterMs);
       setLaneState("quota", { retryAt, message: String(error?.message ?? "free usage limit reached").slice(0, 300) });
       recordPassiveResult(entry.id, STATE.throttled);
       return;
@@ -465,7 +475,7 @@ function createModelRuntime({
       return { ok: true, count: 0, skipped: true };
     }
     try {
-      const ids = parseListing(await fetchSealedListing(credential, { signal: lifetime.signal }));
+      const ids = parseListing(await fetchSealedListing(credential, { signal: lifetime.signal }), { idsOnly: true });
       if (disposed) return;
       if (Object.hasOwn(credential, "userToken") && sealedCredential()?.userToken !== credential.userToken) return { ok: false, count: sealedCatalog.length, skipped: true };
       if (ids.length > 0) {

@@ -385,13 +385,48 @@ export class FreeModelAdapter {
       // wall no model/session/UA choice moves (issue #767 measured exactly
       // that), so the lane refuses locally instead of feeding the wall another
       // request. `重试` here means changing the exit or waiting for `retryAt`.
+      //
+      // This refusal reports itself the way every other pre-request refusal in
+      // this function does — a `finish` chunk carrying a classified failure —
+      // and deliberately does NOT throw. A throw here escapes the `try` below
+      // (it starts at the request, hundreds of lines down), so the host received
+      // a bare exception with no `failure.code` and rendered it as UNKNOWN:
+      // measured 2026-11-22, the one error the user could act on was the one
+      // error the page could not classify.
+      //
+      // It must also not re-enter `onFreeLaneOutcome`: that records the verdict
+      // that opened this window, so feeding the local refusal back into it would
+      // push `retryAt` forward on every attempt and the window would never close
+      // while the user kept trying.
       const gate = this.deps.freeLaneGate?.()
       if (gate?.ok === false) {
-        const when = Number.isFinite(gate.retryAt) ? new Date(gate.retryAt).toISOString() : 'until the exit changes'
-        throw new UpstreamError(
-          `the OpenCode free quota window is open on this egress${gate.message ? `: ${gate.message}` : ''} — retry after ${when}, or switch the lane's exit proxy; Kilo and extension channels are unaffected`,
-          CODE.quota,
-          { ...(Number.isFinite(gate.retryAt) ? { providerRetryAfterMs: Math.max(1000, gate.retryAt - Date.now()) } : {}), laneQuota: true, laneState: gate.state })
+        const since = Number.isFinite(gate.since) ? new Date(gate.since).toISOString() : ''
+        const until = Number.isFinite(gate.retryAt) ? new Date(gate.retryAt).toISOString() : ''
+        const lifted = gate.state === 'locked'
+          ? 'changing the lane exit lifts it'
+          : `it lifts at ${until}`
+        recordRejectedTurn()
+        yield {
+          type: 'finish',
+          reason: {
+            kind: 'error',
+            failure: {
+              message: `our free model is holding this lane shut locally: a ${gate.state === 'locked' ? 'client-gate refusal' : 'quota 429'}${since ? ` recorded at ${since}` : ''} opened a cooldown on this exit${gate.message ? ` (${gate.message})` : ''} — ${lifted}; use "解除车道锁定" on the settings page to retry now, or switch the lane's exit proxy. Kilo and extension channels are unaffected`,
+              code: CODE.quota,
+              ...(Number.isFinite(gate.retryAt) ? { providerRetryAfterMs: Math.max(1000, gate.retryAt - Date.now()) } : {}),
+              laneQuota: true,
+              laneState: gate.state,
+            },
+          },
+        }
+        // A combo may still have a candidate this gate does not cover (a Kilo or
+        // EAC row carries its own lane), so the refusal stays advanceable. For a
+        // single model `allowAdvance` is absent and nothing moves.
+        return {
+          ok: false,
+          advance: plan.allowAdvance === true && options.signal?.aborted !== true,
+          verdict: null,
+        }
       }
     }
     // The absorbed channels speak the Chat wire regardless of what their ids

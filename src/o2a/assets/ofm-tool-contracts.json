@@ -1,20 +1,79 @@
 {
-  "edit": {
-    "description": "Replace an exact text match in a file. Read the current file before editing.",
+  "read": {
+    "description": "Read the contents of a file or directory. Supports text files, images, and PDFs. Images and PDFs are presented directly to the model. Each text line is prefixed by its 1-based line number as <line>: <content>. The prefix is for reference and is not part of the file content. Directory entries are returned one per line. Use offset and limit to read large files or directories in sections. Prefer one larger read over many small slices, and use grep to find specific content in large files.",
     "parameters": {
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File or directory to read"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The line or directory entry to start reading from (1-based)"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The maximum number of lines or directory entries to read (defaults to and capped at 2000)"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "shell": {
+    "description": "Execute a shell command and return its output. Commands run on ${OS} using ${shell}. Quote file paths containing spaces or special characters. Prefer dedicated tools over shell commands when possible. When output is large, the full result is saved to a file and a truncated preview is returned. Rely on automatic truncation unless filtering the output is more useful. Commands accept an optional timeout, background commands have no timeout by default. Background commands return immediately, and you will be notified when they complete.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command string to execute"
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead."
+        },
+        "timeout": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Timeout in milliseconds. Set to 0 to disable the timeout. Defaults to 120000 for foreground commands. Background commands have no timeout by default."
+        },
+        "background": {
+          "type": "boolean",
+          "description": "Run the command in the background and return immediately (useful for dev servers and long-running builds). You do not need to use '&' at the end of the command when using this parameter. You will be notified when it completes. DO NOT poll for completion."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "edit": {
+    "description": "Edit the contents of a file by finding and replacing exact text. When editing text from Read output, preserve the exact indentation (tabs or spaces) and omit the line-number prefix, such as `1: `. Never include the prefix in oldString or newString. Write line breaks as \\n; the file's existing CRLF or LF line endings are matched and preserved. To change line endings themselves, make oldString and newString differ only in \\r; that edit applies to the exact bytes. If there is no exact match, the edit retries while ignoring typographic quote, dash, and space variants, then trailing whitespace on each line. The edit fails if oldString is not found. By default, oldString must identify a UNIQUE location. Multiple matches FAIL unless replaceAll is true. Add more surrounding context to disambiguate, or set replaceAll to true to replace every occurrence. Use replaceAll when the change should apply to every occurrence, such as renaming a variable.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File to edit"
         },
         "oldString": {
-          "type": "string"
+          "type": "string",
+          "description": "Exact text to find and replace"
         },
         "newString": {
-          "type": "string"
+          "type": "string",
+          "description": "Text to replace oldString with (must differ from oldString)"
         },
         "replaceAll": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether to replace every occurrence of oldString. When false, oldString must match exactly once. Defaults to false."
         }
       },
       "required": [
@@ -25,38 +84,27 @@
       "additionalProperties": false
     }
   },
-  "execute": {
-    "description": "Run code through the host execution capability when available.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "code": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "code"
-      ],
-      "additionalProperties": false
-    }
-  },
   "glob": {
-    "description": "List matching paths under a directory.",
+    "description": "Search file paths using a glob pattern (examples: \"**/*.ts\", \"src/**/*.tsx\").",
     "parameters": {
       "type": "object",
       "properties": {
         "pattern": {
-          "type": "string"
+          "type": "string",
+          "description": "Glob pattern to match files against"
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Directory to search. Defaults to the current working directory."
         },
         "hidden": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Include hidden files and directories (default: false)."
         },
         "limit": {
           "type": "integer",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "description": "Maximum number of matching files to return (default: 100)"
         }
       },
       "required": [
@@ -66,29 +114,35 @@
     }
   },
   "grep": {
-    "description": "Search file content and return matching locations.",
+    "description": "Search file contents using ripgrep's regular expression syntax or literal text matching. Use it to locate specific code, symbols, or text patterns, and narrow searches with `path` or `include`. Returns matching file paths, line numbers, and line previews.",
     "parameters": {
       "type": "object",
       "properties": {
         "pattern": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Regular expression or literal text to match in file contents."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "File or directory to search. Defaults to the current working directory."
         },
         "include": {
-          "type": "string"
-        },
-        "caseSensitive": {
-          "type": "boolean"
+          "type": "string",
+          "description": "Glob pattern to filter files (for example, \"*.js\" or \"*.{ts,tsx}\")"
         },
         "literal": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Treat `pattern` as exact text instead of a regular expression (default: false)."
+        },
+        "caseSensitive": {
+          "type": "boolean",
+          "description": "Use case-sensitive matching (default: true)."
         },
         "limit": {
           "type": "integer",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "description": "Maximum number of matching lines to return (default: 100)"
         }
       },
       "required": [
@@ -97,14 +151,97 @@
       "additionalProperties": false
     }
   },
+  "write": {
+    "description": "Writes a file to the local filesystem, overwriting if one exists.\n\nMissing parent directories are created automatically.\n\nUse this tool to create new files or overwrite existing files. For partial changes, use the edit tool instead.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path to the file to write to"
+        },
+        "content": {
+          "type": "string",
+          "description": "Content to write to the file"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "patch": {
+    "description": "Use the `patch` tool to edit files. Your patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:\n\n*** Begin Patch\n[ one or more file sections ]\n*** End Patch\n\nWithin that envelope, you get a sequence of file operations.\nYou MUST include a header to specify the action you are taking.\nEach operation starts with one of three headers:\n\n*** Add File: <path> - create a new file. Every following line is a + line (the initial contents).\n*** Delete File: <path> - remove an existing file. Nothing follows.\n*** Update File: <path> - patch an existing file in place (optionally with a rename).\n\nExample patch:\n\n```\n*** Begin Patch\n*** Add File: hello.txt\n+Hello world\n*** Update File: src/app.py\n*** Move to: src/main.py\n@@ def greet():\n-print(\"Hi\")\n+print(\"Hello, world!\")\n*** Delete File: obsolete.txt\n*** End Patch\n```\n\nIt is important to remember:\n\n- You must include a header with your intended action (Add/Delete/Update)\n- You must prefix new lines with `+` even when creating a new file\n",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "patchText": {
+          "type": "string",
+          "description": "The full patch text describing add, update, and delete operations"
+        }
+      },
+      "required": [
+        "patchText"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "webfetch": {
+    "description": "Fetch content from an HTTP or HTTPS URL and return it as text, markdown, or HTML. Markdown is the default.\n\nUse a more targeted tool when one is available. This tool is read-only. Large text results may be replaced with a preview while the complete output is retained in managed storage.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "The HTTP or HTTPS URL to fetch content from"
+        },
+        "format": {
+          "enum": [
+            "text",
+            "markdown",
+            "html"
+          ],
+          "description": "The format to return the content in. Defaults to markdown."
+        },
+        "timeout": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 120,
+          "description": "Optional timeout in seconds (maximum: 120)"
+        }
+      },
+      "required": [
+        "url",
+        "format"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "websearch": {
+    "description": "Search the web using the user's selected search integration. Use this for current information beyond knowledge cutoff.\n\nThe current year is 2026. Use this year when searching for recent information or current events.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Websearch query"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
   "question": {
-    "description": "Request a user decision using concise questions and options.",
+    "description": "Use this tool when you need to ask the user questions during execution. This allows you to:\n1. Gather user preferences or requirements\n2. Clarify ambiguous instructions\n3. Get decisions on implementation choices as you work\n4. Offer choices to the user about what direction to take.\n\nUsage notes:\n- A \"Type your own answer\" option is added automatically; don't include a separate option for free form answers\n- Set `multiple: true` to allow selecting more than one option\n- If you recommend a specific option, make that the first option in the list and add \"(Recommended)\" at the end of the label",
     "parameters": {
       "type": "object",
       "properties": {
         "questions": {
           "type": "array",
-          "minItems": 1,
           "items": {
             "type": "object",
             "properties": {
@@ -113,9 +250,6 @@
               },
               "header": {
                 "type": "string"
-              },
-              "multiple": {
-                "type": "boolean"
               },
               "options": {
                 "type": "array",
@@ -135,6 +269,9 @@
                   ],
                   "additionalProperties": false
                 }
+              },
+              "multiple": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -143,7 +280,9 @@
               "options"
             ],
             "additionalProperties": false
-          }
+          },
+          "minItems": 1,
+          "description": "Questions to ask"
         }
       },
       "required": [
@@ -152,61 +291,14 @@
       "additionalProperties": false
     }
   },
-  "read": {
-    "description": "Read file content, optionally selecting an offset and length.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "offset": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "limit": {
-          "type": "integer",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "path"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "shell": {
-    "description": "Run a command on Linux using bash. Respect the host working directory and execution permissions.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "command": {
-          "type": "string"
-        },
-        "workdir": {
-          "type": "string"
-        },
-        "timeout": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "background": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "command"
-      ],
-      "additionalProperties": false
-    }
-  },
   "skill": {
-    "description": "Load a skill explicitly made available by the host.",
+    "description": "Load a specialized skill's instructions and resources into the current conversation when the task at hand matches its description.\n\nThe skill ID must match an available skill or a skill explicitly referenced by the user.",
     "parameters": {
       "type": "object",
       "properties": {
         "id": {
-          "type": "string"
+          "type": "string",
+          "description": "The ID of an available skill or a skill explicitly referenced by the user"
         }
       },
       "required": [
@@ -216,28 +308,33 @@
     }
   },
   "subagent": {
-    "description": "Delegate a scoped task to an available agent when authorized.",
+    "description": "Spawns an agent in a child session to work on the specified task.\nThe output includes a sessionID you can pass back later to continue that specific conversation with the subagent.\nNew child sessions start with fresh context, so include all relevant context and instructions when you don't pass a sessionID.\nForeground (default) runs the subagent to completion and returns its final response.\nBackground mode (background=true) launches it asynchronously and returns immediately; you are notified when it finishes.\nUse background only for independent work that can run while you continue elsewhere.",
     "parameters": {
       "type": "object",
       "properties": {
         "agent": {
-          "type": "string"
+          "type": "string",
+          "description": "The type of specialized agent to use for this task. If the user asks for a subagent by a name that is not one of the available subagents, they most likely mean a model: pick a suitable agent and pass the name through the model parameter instead."
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "A short 3-5 word label for the task, displayed to the user"
         },
         "prompt": {
-          "type": "string"
-        },
-        "background": {
-          "type": "boolean"
+          "type": "string",
+          "description": "The task for the subagent to perform"
         },
         "model": {
-          "type": "string"
+          "type": "string",
+          "description": "NEVER set this unless the user explicitly asks for a particular model or variant. It must be a chat model; image and decision models can't run subagents. The value is written as \"providerID/modelID\", or \"providerID/modelID#variant\" to include a variant. Do not guess the ID: look the model up with the models tool, filtering to your own provider first."
         },
         "sessionID": {
           "type": "string",
-          "pattern": "^ses"
+          "description": "Send a follow-up to an existing subagent, running or finished. Omit to start a new one."
+        },
+        "background": {
+          "type": "boolean",
+          "description": "Run the subagent in the background and return immediately. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress."
         }
       },
       "required": [
@@ -248,79 +345,41 @@
       "additionalProperties": false
     }
   },
-  "webfetch": {
-    "description": "Retrieve a public URL in the selected representation.",
+  "todowrite": {
+    "description": "Create and update a todo list for the current session. The user sees it as your working plan.\n\nUse it proactively when a task has 3 or more distinct steps, or when the user gives several tasks or asks for a todo list. Skip it for a single simple task or a purely conversational request. When in doubt, use it.\n\n- Send the full list on every call; it replaces the previous one.\n- Mark items `in_progress` when you start them and `completed` as soon as they're actually done.\n- Only call it when the list changes.\n",
     "parameters": {
       "type": "object",
       "properties": {
-        "url": {
-          "type": "string"
-        },
-        "format": {
-          "type": "string",
-          "enum": [
-            "text",
-            "markdown",
-            "html"
-          ]
-        },
-        "timeout": {
-          "type": "number",
-          "exclusiveMinimum": 0,
-          "maximum": 120
+        "todos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "description": "Brief description of the task"
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "completed",
+                  "cancelled"
+                ],
+                "description": "Current status of the task: pending, in_progress, completed, cancelled"
+              }
+            },
+            "required": [
+              "content",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "description": "The updated todo list"
         }
       },
       "required": [
-        "url"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "websearch": {
-    "description": "Search public web information for the supplied query.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "query": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "query"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "write": {
-    "description": "Write the supplied content to a file within the authorized task scope.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "content": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "path",
-        "content"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "patch": {
-    "description": "Apply the supplied patch through the host file editing capability.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "patchText": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "patchText"
+        "todos"
       ],
       "additionalProperties": false
     }

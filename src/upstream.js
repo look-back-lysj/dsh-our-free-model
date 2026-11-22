@@ -21,9 +21,8 @@ import {
   CANONICAL_SESSION_RE,
   CLIENT_UA,
   DESCENDING_TIME_RE,
-  O2A_VERSION,
   ToolRenameMap,
-  canonicalSessionID,
+  mintSessionIdentifier,
   ensureChatUsage,
   ensureV2CompletionLimit,
   gatewayHeaders as o2aGatewayHeaders,
@@ -33,7 +32,7 @@ import {
   phaseAgeMs,
   randomID,
   randomProjectID,
-  renameAndCompleteTools,
+  shapeToolSurface,
   renamableToolName,
   sessionPhaseMs,
 } from './o2a.js'
@@ -45,9 +44,6 @@ import {
 export const UPSTREAM_BASE = process.env.OUR_FREE_MODEL_BASE ?? 'https://opencode.ai'
 
 export { CLIENT_UA }
-
-/** Historical reference version retained for callers; see src/o2a/SYNC.md. */
-export const O2A_PORTED_VERSION = O2A_VERSION
 
 const MAX_SESSION_LENGTH = 256
 const MAX_TOOL_NAME_LEN = 128
@@ -77,12 +73,12 @@ export function isCanonicalSession(id) {
 /**
  * Re-encode any session signal into the canonical layout the gate accepts,
  * keeping one signal on one session for the life of the process
- * (`o2a/identity.canonicalSessionID`): official sessions pass through, and a
+ * (`o2a/identity.mintSessionIdentifier`): official sessions pass through, and a
  * synthesized one carries a slow-clock timestamp inside the window the
  * upstream accepts, salted per process so a restart re-mints.
  */
 export function canonicalizeSession(signal) {
-  return canonicalSessionID(signal)
+  return mintSessionIdentifier(signal)
 }
 
 /** Render `bytes` as base62, one character per byte (`base62From`). */
@@ -261,11 +257,20 @@ export function gatewayHeaders(options) {
   return o2aGatewayHeaders(options)
 }
 
-function toolNameOf(tool) {
-  if (!tool || typeof tool !== 'object' || Array.isArray(tool)) return ''
-  if (typeof tool.name === 'string' && tool.name.trim()) return tool.name.trim()
-  const fn = tool.function
-  if (fn && typeof fn === 'object' && !Array.isArray(fn) && typeof fn.name === 'string') return fn.name.trim()
+/**
+ * The name a tool declaration carries, whichever of the two wire shapes it uses.
+ *
+ * Chat puts it at `function.name`, Responses and the flat Anthropic shape put it at
+ * the top level. A non-string or blank name is treated as absent rather than coerced,
+ * because a blank tool name would be sent upstream as a declaration the model cannot
+ * call and the caller would see a silent no-op instead of an error.
+ */
+function declaredToolName(declaration) {
+  if (declaration === null || typeof declaration !== 'object') return ''
+  const candidates = [declaration.name, declaration.function?.name]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim()
+  }
   return ''
 }
 
@@ -370,18 +375,16 @@ export function ensureFreeLaneEnvironment(body, style, environment = {}) {
 }
 
 /**
- * The request shapes the free tier reads as a conversation-title generator
- * (`title.IsTitleRequest`, opencode2api v1.4.7): no tools declared, one to
- * three turns, no assistant/tool/function turn, and a title marker in the
- * system or leading text.
+ * The request shapes the free tier reads as a conversation-title generator:
+ * no tools declared, one to three turns, no assistant/tool/function turn, and a
+ * title marker in the system or leading text.
  *
- * The reference stopped shaping these bodies in v1.4.7 with a measured reason:
- * the free tier answers an agent-shaped tool list on a toolless title call
- * with 403/429. This lane injects the full official prompt and 13-tool set on
- * every body, so the harness's title round-trips used to ship exactly that
- * shape whenever the local title answer was switched off. A title request now
- * ships as the caller wrote it — no prompt injection, no tool append, no
- * renames.
+ * These bodies must not be shaped, for a measured reason: the free tier answers
+ * an agent-shaped tool list on a toolless title call with 403/429. This lane
+ * injects the full official prompt and 13-tool set on every body, so the
+ * harness's title round-trips used to ship exactly that shape whenever the local
+ * title answer was switched off. A title request now ships as the caller wrote
+ * it — no prompt injection, no tool append, no renames.
  */
 const TITLE_MARKERS = /generate a title|write a title|create a title|come up with a title|title (?:for|of) (?:this|the) (?:conversation|chat|session|exchange|request)|conversation title|summarize (?:this|the) conversation/i
 
@@ -437,7 +440,7 @@ export function applyFingerprint(body, style) {
       keep.add(name)
     }
   }
-  const { renames, injected } = renameAndCompleteTools(body, shape, { keep })
+  const { renames, injected } = shapeToolSurface(body, shape, { keep })
 
   // 4b. The injected officials need the placeholder note.
   if (injected.length > 0) noteInjectedTools(body, shape, injected)
@@ -467,7 +470,7 @@ export function restoreToolName(name, map) {
 export function declaredToolNames(body) {
   const names = new Set()
   for (const tool of Array.isArray(body.tools) ? body.tools : []) {
-    const n = toolNameOf(tool)
+    const n = declaredToolName(tool)
     if (n) names.add(n)
   }
   return names

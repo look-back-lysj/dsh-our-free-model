@@ -31,6 +31,13 @@ export interface ServiceSettings {
   defaultMaxTokens: number
   developerPlugins: boolean
   autoUpdateExtensions: boolean
+  /**
+   * The OpenCode free lane's exit pool. `proxies` holds masked labels (protocol,
+   * host and port only) — the addresses themselves never ride in a routine
+   * payload, because a proxy URL routinely carries credentials in its userinfo.
+   * On a write, `proxies` is optional: omitting it keeps the stored list.
+   */
+  freeLane?: { proxies?: string[]; maxTries: number }
 }
 
 export interface PluginPermissions { network: string[]; secrets: string[]; storage: boolean }
@@ -182,5 +189,7 @@ export interface Host {
   testModel(model: string, signal: AbortSignal): Promise<ModelTestResult>
   refreshModels(probe: boolean, signal: AbortSignal): Promise<void>
   saveSettings(settings: Partial<ServiceSettings>): Promise<ServiceSettings>
+  /** Lift the cooldown on every free-lane exit; returns how many were cleared. */
+  clearLaneExits(): Promise<number>
   request<T = unknown>(path: string, body?: unknown, timeoutMs?: number): Promise<T>
 }

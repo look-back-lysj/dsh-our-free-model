@@ -35,15 +35,19 @@ function medianMs(fn, input) {
 }
 
 // Load the entire old module tree so baseline imports cannot use rewritten helpers.
+// The baseline commit predates the directory rename, so it is archived from the old
+// path and read back through that same old path inside the snapshot.
+const BASELINE_TREE = 'src/token-saver/rtk'
 const snapshot = mkdtempSync(join(tmpdir(), 'ofm-compression-baseline-'))
 try {
-  const archive = execFileSync('git', ['archive', baseline, 'src/token-saver/rtk'])
+  const archive = execFileSync('git', ['archive', baseline, BASELINE_TREE])
   execFileSync('tar', ['-xf', '-', '-C', snapshot], { input: archive })
   writeFileSync(join(snapshot, 'package.json'), '{"type":"module"}')
   for (const [name, input] of Object.entries(cases)) {
-    const path = `src/token-saver/rtk/filters/${name}.js`
-    const url = new URL(`../${path}`, import.meta.url)
-    const original = (await import(pathToFileURL(join(snapshot, path)).href))[name]
+    const baselinePath = `${BASELINE_TREE}/filters/${name}.js`
+    const currentPath = `src/token-saver/compact/filters/${name}.js`
+    const url = new URL(`../${currentPath}`, import.meta.url)
+    const original = (await import(pathToFileURL(join(snapshot, baselinePath)).href))[name]
     const replacement = (await import(url))[name]
     // The former hint required an RTK CLI that OFM does not install.
     const expected = name === 'gitDiff'

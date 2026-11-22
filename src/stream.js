@@ -193,8 +193,8 @@ class BlockSink {
    *
    * Some gateways split `tool_calls[].function.name` across delta frames — and
    * resolving every fragment on arrival used to fold a half name into a wrong
-   * or unknown tool, surfacing ghost calls (opencode2api v1.4.7 buffers the
-   * same way). The raw name accumulates here and resolves through
+   * or unknown tool, surfacing ghost calls. Buffering the fragments until the
+   * arguments start is the behaviour measured as correct on this lane. The raw name accumulates here and resolves through
    * {@link resolveRawName} once the call's arguments start or the block closes;
    * until then the emitted deltas simply carry no name, which downstream
    * consumers already tolerate (arguments can legitimately precede a name).

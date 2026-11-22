@@ -179,12 +179,26 @@ export const SETTINGS_INITIAL = {
    *  probe requests. Since 2.8.1 this cadence also cannot re-fetch the listing
    *  more often than once a listing window (see src/core/runtime.js). */
   probeIntervalMinutes: 15,
-  /** The OpenCode lane's own proxy exit (issue #708's method): when set, this
-   *  lane's requests dial through it instead of the process's global egress,
-   *  which is how a burned per-IP quota window is left behind. Empty means the
-   *  global outlet when one runs, then the HTTP(S)_PROXY environment, then
-   *  direct. Never auto-rotated — the address is the user's own. */
-  freeLane: { proxyUrl: '' },
+  /**
+   * The OpenCode lane's own exit pool (issue #708's method).
+   *
+   * The free tier's usage ceiling is counted per egress IP, so moving this
+   * lane's requests through another exit is the one lever that moves the
+   * counter. One address is not enough: a burned IP answers with a multi-hour
+   * `Retry-After`, and the lane needs somewhere to go within the same turn.
+   *
+   *   `proxies`  one address per entry; `http`/`https`/`socks5`/`socks5h`, and
+   *              a `#pool` (or `pool+`) suffix marks a rotating pool endpoint
+   *              that is never cooled. Empty means the global outlet when one
+   *              runs, then the HTTP(S)_PROXY environment, then direct.
+   *   `maxTries` how many distinct exits one request may walk.
+   *
+   * `proxyUrl` is the pre-pool single-address field, kept so an older settings
+   * file still works: it is folded into `proxies` when the list is empty.
+   * Nothing here rotates on its own — an exit is skipped only after the upstream
+   * said that exit is spent.
+   */
+  freeLane: { proxies: [], proxyUrl: '', maxTries: 3 },
   /** Serve the OpenAI-compatible forward listener for other local harnesses. */
   forward: {
     enabled: false,

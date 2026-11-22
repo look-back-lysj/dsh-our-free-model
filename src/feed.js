@@ -73,6 +73,30 @@ const MAX_HTML_BYTES = 96 * 1024
 const MAX_ITEMS = 100
 
 /**
+ * How long a cached copy may still raise an `urgent` interruption.
+ *
+ * The cache is a *snapshot of a document*, and a snapshot cannot learn what the
+ * document says later. Withdrawing an announcement is the case that exposes it:
+ * the owner adds `expiresAt` to the published file, but every install that
+ * already cached the item holds a copy with no `expiresAt` field at all — so
+ * `parseItem` sees nothing to expire, `view()` has nothing to filter on, and the
+ * full-screen modal keeps opening on every settings visit until a poll finally
+ * succeeds. On a network where the feed sources are unreachable that is
+ * forever, and a retraction that cannot be delivered is worse than no
+ * retraction.
+ *
+ * So the permission to interrupt is time-bounded at the consumer instead of
+ * being taken on trust from a possibly-stale snapshot: an `urgent` item only
+ * opens the modal while the copy carrying it is younger than this window. Two
+ * hours is four default poll intervals (the default period is 30 minutes), so a
+ * couple of missed polls still deliver a fresh announcement, while a retracted
+ * one stops interrupting within two hours. Non-urgent items are unaffected — a
+ * stale roster entry is a stale line in a list, not an interruption.
+ */
+const URGENT_TRUST_MS = 2 * 60 * 60_000
+
+
+/**
  * Validate one raw feed document into the shape the rest of the plugin consumes.
  *
  * @param {unknown} payload - the parsed JSON document
@@ -308,9 +332,18 @@ export class AnnouncementFeed {  /**
     // the next poll happens to succeed (parseItem only filters on ingest, and
     // an unreachable feed source means no next poll for a long time).
     const now = Date.now()
+    // A stale snapshot keeps its place in the list but loses the right to
+    // interrupt: see URGENT_TRUST_MS. `muted` is what the client checks before
+    // opening the modal, so a retraction reaches installs that cached the item
+    // before the retraction existed.
+    const stale = this.cache.at === 0 || now - this.cache.at > URGENT_TRUST_MS
     const items = this.cache.announcements
       .filter(item => item.expiresAt === undefined || item.expiresAt > now)
-      .map(item => ({ ...item, acked: acked.has(item.id) }))
+      .map(item => ({
+        ...item,
+        acked: acked.has(item.id),
+        ...(stale && item.level === 'urgent' ? { muted: true } : {}),
+      }))
     return {
       items,
       unread: items.filter(item => !item.acked).length,

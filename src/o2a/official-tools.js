@@ -1,9 +1,19 @@
 /** Render authored transport tool contracts in each supported wire format. */
 import { officialToolsText } from './asset-source.js'
 
+/**
+ * The 13 tools the official 2.2.3 client declares, in the order this lane sends
+ * them (alphabetical, so the body is byte-stable across runs).
+ *
+ * The set is not free choice: `read` and `shell` are the two the free tier
+ * validates the definition of, and the rest are what makes the request read as a
+ * CLI agent session. `execute` used to sit here — it belongs to an older client
+ * generation and 2.2.3 does not ship it — and `todowrite` was missing. Both are
+ * corrected against the tag pinned in `src/o2a/version.js`.
+ */
 export const V2_OFFICIAL_TOOL_ORDER = Object.freeze([
-  'edit', 'execute', 'glob', 'grep', 'question', 'read', 'shell',
-  'skill', 'subagent', 'webfetch', 'websearch', 'write', 'patch',
+  'edit', 'glob', 'grep', 'patch', 'question', 'read', 'shell',
+  'skill', 'subagent', 'todowrite', 'webfetch', 'websearch', 'write',
 ])
 let definitions
 export function officialToolDefinition(name) {
@@ -11,8 +21,31 @@ export function officialToolDefinition(name) {
   return definitions.get(name)
 }
 
+/** `process.platform` → the OS word the client's shell sentence uses. */
+const SHELL_OS = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }
+
+/**
+ * The compat-priority shell name for this platform, as
+ * `packages/core/src/shell/select.ts` resolves it: the first executable among
+ * `pwsh`, `powershell`, git-bash and `%COMSPEC%` on Windows; `/etc/shells`'
+ * first entry (or `bash`) elsewhere. The gateway cannot know which of those the
+ * user has installed, so it names the one every Windows install carries and the
+ * one every Unix install carries.
+ */
+const SHELL_NAME = { win32: 'powershell', darwin: 'bash', linux: 'bash' }
+
+/**
+ * Render the `shell` tool description.
+ *
+ * The stored asset keeps the client's template (`Commands run on ${OS} using
+ * ${shell}.`) because those two values are resolved by the client on the machine
+ * it runs on, not by the build. The free tier compares this description, so the
+ * rendering has to match what a real client on the same platform would send.
+ */
 export function v2ShellDescription(base, platform = process.platform) {
-  return platform === 'win32' ? base.replace('on Linux using bash', 'on Windows using powershell') : base
+  return base
+    .replace(/\$\{OS\}/g, SHELL_OS[platform] ?? platform)
+    .replace(/\$\{shell\}/g, SHELL_NAME[platform] ?? 'bash')
 }
 
 export function officialTool(shape, name) {

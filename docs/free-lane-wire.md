@@ -158,3 +158,122 @@ Anthropic 线新增 `anthropic-beta: interleaved-thinking-2025-05-14` 头。保�
 `scripts/free-lane-compat-test.mjs`（三线提示注入 + 传输层）。全部在 `npm test` 内。
 
 
+
+---
+
+# 免费层三条闸门与逐字资产（2026-11-21）
+
+issue #857/#888/#890 报「opencode 全 429」。逐项排查后确认是三处独立问题，
+其中一处是本仓库自引入的回归。三条都有实测依据，修复后本机实测恢复 200。
+
+## 回归：官方资产被改写成了自撰版
+
+`docs/free-lane-wire.md` 自己写着 v2 闸门要求「description 与参数 schema 必须与
+官方客户端**逐字一致**」，但 2026-10-31「整形层整体换成参考实现移植」时，
+`src/o2a/assets/` 的两份资产被重写成了 OFM 自撰文本（`src/o2a/SYNC.md` 原文：
+「描述文本重新编写」）。对比官方 v2.2.3：
+
+| | 改写后（故障） | 官方 v2.2.3 |
+| --- | --- | --- |
+| `read` 描述 | `Read file content, optionally selecting an offset and length.` | 8 句完整描述 |
+| 参数描述 | **一个都没有**（只有 `type`） | 每个 property 都带 `description` |
+| `glob` 描述 | `List matching paths under a directory.` | `Search file paths using a glob pattern (examples: "**/*.ts"…)` |
+
+**判定**：闸门比对的是完整定义，不是仅参数形状。改写即 429。
+
+**修法**：资产改为从上游生成，不再手写。
+
+- `scripts/fetch-opencode-assets.mjs` — 按 `V2_CLIENT_VERSION` 钉住的 tag
+  （`sst/opencode`，MIT）经 GitHub blob API 取源文件到 `.build-cache/`（不提交）。
+- `scripts/build-o2a-assets.mjs` — 静态求值上游的 Effect `Schema` 表达式，
+  生成 `ofm-tool-contracts.json` 与 `ofm-agent-context.txt`。求值器只认这 13 个
+  工具实际用到的构造，遇到其它形态**直接失败**而不是猜——猜出来的 schema 就是
+  线上 429。
+- 出处与逐文件 sha：`docs/opencode-assets.md`。
+- `scripts/o2a-assets-test.mjs` 守住资产形状（13 个工具、每个参数都有描述、
+  模板完整、无 `clint_` 残留）。
+
+顺带修正：`V2_OFFICIAL_TOOL_ORDER` 里有个 v2.2.3 根本不带的 `execute`，缺了
+`todowrite` —— 工具集现在与 tag 一致。
+
+## 闸门一：工具名里的 `clint_` 字面量
+
+参考实现实测（`95575c5`，2026-11-16）：**同一个 body，工具名前缀 `clint_` 时 429，
+换成别的命名空间就 200**。前缀本身是被匹配的对象。
+
+`CLIENT_TOOL_PREFIX` 改为 `mcp_` —— 一个真实工具名可能带的前缀
+（MCP 客户端是 `mcp__<server>__<tool>`），所以不会像网关标记那样被拒。
+
+⚠️ 上游也可能学会 `mcp_`。**只有带工具的请求单独 429 时**才轮换这个常量。
+
+配套两点：
+
+- `LEGACY_CLIENT_TOOL_PREFIXES = ['clint_']`：保存的会话历史里还有旧线名，
+  响应还原时两种前缀都剥。
+- 幂等判断从 `startsWith` 收紧为整串匹配 `^mcp_[0-9a-f]{12}(_\d+)?$`：
+  `mcp_` 是真实 MCP 工具名的前缀，只判前缀会把调用方自己的工具误当成已改名而
+  原样发出——那正是这条车道唯一不能做的事。
+
+## 闸门二：调用方工具描述里的 ASCII 空格
+
+参考实现实测（`6575c62`，2026-11-20）：上游还比对调用方工具**顶层 description**
+的字面措辞。把 ASCII 空格换成 NBSP（`U+00A0`）即绕过，模型读到的文字不变。
+
+只改顶层 description：参数 schema、参数内描述、以及追加的官方工具定义**保持逐字**
+（那三处是逐字比对的）。NBSP 不含 ASCII 空格，因此重复整形是 no-op。
+
+## 平台模板
+
+v2.2.3 的 `shell` 描述是模板 `Commands run on ${OS} using ${shell}.`，
+`${OS}`/`${shell}` 由客户端按自己所在机器填充（`packages/core/src/shell/select.ts`
+的 compat 优先级：Windows 上 `pwsh`/`powershell`，其它平台 `bash`）。
+资产保留模板，`v2ShellDescription()` 按 `process.platform` 渲染。
+`vendor/channel-pack` 里那份 v2.0.26 的硬编码措辞与之一句不同，parity 测试按平台分别断言。
+
+## 验证
+
+本机（Windows 10，Bun 1.4.5）实测：
+
+```
+node scripts/oc-free-live-test.mjs --live --model deepseek-v4.1-flash-free
+→ HTTP 200, reply "PONG", billing_source "free", 4731ms
+```
+
+改前同机同出口是 429。这是整形修复的决定性证据。
+
+离线：`npm run test:contributor` 119/122（3 个失败为既有问题：
+`effort`/`picker` 的 mimo 能力表未校准，`feedback-server` 套件间抖动——单跑通过）。
+
+---
+
+# 官方名只能承载官方定义（2026-11-22 实测）
+
+真实 DSH 里 `deepseek-v4.1-flash-free` 每轮 429，而同一出口、同一分钟的裸探针
+200。用插件自己的 adapter 路径做单变量复现：
+
+| 调用方工具 | 发到线上的形状 | 结果 |
+| --- | --- | --- |
+| 不带工具 | 官方提示 + 13 工具 | 200 |
+| `foo_tool` | `mcp_<hash>` | 200 |
+| `bash`（DSH 定义） | 被折叠成 `shell`，定义仍是 DSH 的 | 429 |
+| `bash` + `{command, timeoutMs, workdir}` | `shell`，schema 无 `description` 属性 | 200 |
+| `bash` + schema 含 `description` 属性 | `shell` | 429 |
+| `foo_tool` + `{description, command}` | `mcp_<hash>` | 200 |
+
+结论：上游读取**官方名下**的声明，调用方工具撞上官方名（含 `bash`→`shell`、
+`Read`→`read` 的别名折叠）时，官方定义被调用方定义顶掉，于是返回
+`429 FreeUsageLimitError`。`shell` 名下恰好没有 `description` 属性时可能侥幸
+通过，但这是不可依赖的。
+
+修法：`src/o2a/toolshape.js` 的 `assignWireName` / `shapeToolSurface` 只在
+`carriesOfficialDefinition()` 为真时允许占用官方名；否则一律 `mcp_<hash>`，
+官方 13 工具照常逐字注入。重复声明按 wire name 去重。
+
+验证：
+
+```text
+node scripts/fingerprint-test.mjs      → all passed（含新增 1b 回归）
+node scripts/free-lane-wire-test.mjs   → all passed
+node scripts/opencode-parity-test.mjs  → all passed
+真实 DSH 桌面端，同一旧会话（~110k tokens、含工具历史）发「你好」→ 正常回答
+```

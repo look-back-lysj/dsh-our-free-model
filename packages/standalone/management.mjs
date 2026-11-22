@@ -6,6 +6,7 @@ import { generateKey } from '../../src/forward.js'
 import { structuralRejection } from '../../src/trust.js'
 import { openLoginTerminal } from './login-terminal.mjs'
 import { publicModelVisibility, validateModelVisibility, isModelHidden } from '../../src/store.js'
+import { freeLaneExitSnapshot, clearLaneExits, laneProxyEcho } from '../../src/egress.js'
 import { createWorkbench } from './workbench.mjs'
 import { createProviderManagement } from './providers.mjs'
 import { createWorkbenchLibrary } from './library.mjs'
@@ -64,6 +65,7 @@ function validateSettings(patch) {
   const result = {}
   for (const [key, value] of Object.entries(patch)) {
     if (Object.hasOwn(visibility, key)) { result[key] = visibility[key]; continue }
+    if (key === 'freeLane') { result[key] = validateFreeLane(value); continue }
     if (booleans.has(key)) {
       if (typeof value !== 'boolean') throw fail(400, `${key} 必须是布尔值`)
     } else if (Object.hasOwn(numbers, key)) {
@@ -73,6 +75,45 @@ function validateSettings(patch) {
     result[key] = value
   }
   return result
+}
+
+/**
+ * The free lane's exit pool.
+ *
+ * `proxies` is a list of addresses, each optionally marked `#pool` (a rotating
+ * endpoint, never cooled). `maxTries` bounds how many exits one request may
+ * walk. Every address is validated here so a typo fails the write rather than
+ * every turn — the same contract the desktop settings route holds.
+ */
+function validateFreeLane(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw fail(400, 'freeLane 必须是对象')
+  const out = {}
+  if (value.proxies !== undefined) {
+    if (!Array.isArray(value.proxies)) throw fail(400, 'freeLane.proxies 必须是数组')
+    const proxies = []
+    for (const raw of value.proxies) {
+      if (typeof raw !== 'string') throw fail(400, 'freeLane.proxies 的每一项必须是字符串')
+      const text = raw.trim()
+      if (text === '') continue
+      let candidate = text
+      if (/^pool\+/i.test(candidate)) candidate = candidate.slice(5).trim()
+      if (/#pool$/i.test(candidate)) candidate = candidate.replace(/#pool$/i, '').trim()
+      let parsed
+      try { parsed = new URL(candidate) } catch { throw fail(400, `出口地址无法解析：${text}`) }
+      if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(parsed.protocol)) {
+        throw fail(400, `出口地址的协议不受支持：${parsed.protocol}（可用 http / https / socks5 / socks5h）`)
+      }
+      proxies.push(text)
+    }
+    out.proxies = proxies
+  }
+  if (value.maxTries !== undefined) {
+    if (!Number.isInteger(value.maxTries) || value.maxTries < 1 || value.maxTries > 8) {
+      throw fail(400, 'freeLane.maxTries 必须是 1 到 8 的整数')
+    }
+    out.maxTries = value.maxTries
+  }
+  return out
 }
 
 export function managementSettings(value) {
@@ -88,6 +129,31 @@ export function managementSettings(value) {
     defaultMaxTokens: value.defaultMaxTokens ?? 32768,
     developerPlugins: value.developerPlugins === true,
     autoUpdateExtensions: value.autoUpdateExtensions === true,
+    // The free lane's own exit pool. Addresses are credentials, so only the
+    // masked list and the pool size go out here — never the URLs themselves.
+    freeLane: {
+      proxies: Array.isArray(value.freeLane?.proxies) ? value.freeLane.proxies.map(entry => outletMask(entry)) : [],
+      maxTries: value.freeLane?.maxTries ?? 3,
+    },
+  }
+}
+
+/**
+ * Protocol + host + port only; userinfo, path and query are dropped.
+ *
+ * The `#pool` marker is not a credential and is part of the address's meaning —
+ * a rotating endpoint is never cooled, so dropping the marker would show a pool
+ * entry as an ordinary static one and invite the reader to expect cooldown
+ * behaviour that does not apply to it.
+ */
+function outletMask(raw) {
+  const text = String(raw)
+  try {
+    const url = new URL(text.replace(/^pool\+/i, '').replace(/#pool$/i, '').trim())
+    const pool = /^pool\+/i.test(text.trim()) || /#pool$/i.test(text.trim())
+    return `${url.protocol}//${url.host}${pool ? '#pool' : ''}`
+  } catch {
+    return '…'
   }
 }
 
@@ -202,6 +268,9 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
       catalogSyncedAt: stores.settings.get().catalogSyncedAt ?? 0,
       probedAt: available.at ?? 0,
       lane: available.lane ?? null,
+      // The free lane's exits with their live cooldown, so the page can show
+      // which route is spent and for how long.
+      laneExits: freeLaneExitSnapshot(),
       extensions: extensions !== undefined ? { installed: extensions.listInstalled() } : null,
       plugins: extensions !== undefined ? {
         installedCount: extensions.listInstalled().filter(record => record.builtin !== true).length,
@@ -652,6 +721,20 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
       persist(patch)
       await onSettingsChanged()
       json(res, 200, { settings: managementSettings(stores.settings.get()), lan: info().lan })
+    } else if (method === 'POST' && pathname === `${PREFIX}/lane/echo`) {
+      // Test one exit: dial a third-party echo service, never the free gateway,
+      // so a test never spends quota. `proxy` names the exit to test; omitting it
+      // tests whichever exit the lane would pick right now.
+      const body = await readBody(req)
+      try {
+        json(res, 200, { ok: true, ...await laneProxyEcho({ proxy: typeof body?.proxy === 'string' ? body.proxy : undefined }) })
+      } catch (error) {
+        throw fail(502, String(error?.message ?? error).slice(0, 200))
+      }
+    } else if (method === 'POST' && pathname === `${PREFIX}/lane/clear`) {
+      // Lift the cooldown on every exit. The lane-level quota breaker lives in the
+      // plugin's availability store, not here; this route is about exits.
+      json(res, 200, { ok: true, exits: clearLaneExits(), laneExits: freeLaneExitSnapshot() })
     } else if (method === 'GET' && pathname === `${PREFIX}/lan/key`) {
       json(res, 200, { key: stores.settings.get().standaloneLanKey ?? '' })
     } else if (method === 'POST' && pathname === `${PREFIX}/lan/key/rotate`) {

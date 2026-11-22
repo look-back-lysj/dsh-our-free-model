@@ -59,10 +59,10 @@ const sourceFiles = [
   'src/route/classify.js',
   ...['index', 'inject', 'prompts'].map(name => `src/token-saver/${name}.js`),
   ...['index', 'constants', 'autodetect', 'applyFilter', 'hitLine', 'registry']
-    .map(name => `src/token-saver/rtk/${name}.js`),
+    .map(name => `src/token-saver/compact/${name}.js`),
   ...['buildOutput', 'dedupLog', 'find', 'gitDiff', 'gitLog', 'gitStatus', 'grep', 'ls',
     'readNumbered', 'searchList', 'smartTruncate', 'tree']
-    .map(name => `src/token-saver/rtk/filters/${name}.js`),
+    .map(name => `src/token-saver/compact/filters/${name}.js`),
   'vendor/channel-pack/qoder-auth-wasm.wasm',
   'vendor/channel-pack/LICENSE',
   'vendor/channel-pack/NOTICE.md',

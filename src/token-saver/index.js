@@ -6,7 +6,7 @@
  * 1. **Prompt shaping** (`./prompts.js` + `./inject.js`) — a terse-response or
  *    YAGNI instruction is appended to the system prompt. This changes what the
  *    model *writes*, so it is the only saver that can reduce output tokens.
- * 2. **Tool-output compaction** (`./rtk/`) — the largest single win on an agent
+ * 2. **Tool-output compaction** (`./compact/`) — the largest single win on an agent
  *    turn. A `git diff`, a `grep -rn`, an `ls -la` or a package-manager log is
  *    re-encoded into the same information at a fraction of the bytes before it
  *    ever reaches the wire. This is the one saver that is invisible to the
@@ -23,7 +23,7 @@
  * @module src/token-saver/index.js
  */
 
-import { compressRequest } from './rtk/index.js'
+import { compressRequest } from './compact/index.js'
 import { activePrompts } from './prompts.js'
 import { injectSystem } from './inject.js'
 

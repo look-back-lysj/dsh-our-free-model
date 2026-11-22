@@ -113,7 +113,12 @@ console.log('\n=== 2. further turns are refused locally; the wall sees nothing =
   const before = turns.length
   const second = await turn()
   check('the second turn is refused with quota', [second.ok, second.code, second.failure?.laneQuota], [false, CODE.quota, true])
-  check('the message names the reset', /retry after/i.test(second.message), true)
+  // The refusal is the plugin's own hold, not an upstream message, so it says so
+  // and points at the control that ends it. Assert the facts the user needs
+  // rather than one phrasing: when it lifts, and how to end it early.
+  check('the message names when the hold lifts', /it lifts at/i.test(second.message), true)
+  check('the message names the release control', /解除车道锁定/.test(second.message), true)
+  check('the message says the hold is local', /holding this lane shut locally/i.test(second.message), true)
   check('the wall received no second request', turns.length, before)
   const third = await turn()
   check('a different session is refused too (per-IP window)', [third.ok, turns.length], [false, before])
@@ -152,6 +157,32 @@ console.log('\n=== 6. the client gate locks the lane without a window ===')
   const again = await turn()
   check('the next turn is refused locally', [again.ok, again.code, again.failure?.laneState], [false, CODE.quota, 'locked'])
   check('the wall saw no retry', turns.length, before)
+  runtime.clearLaneBreaker()
+}
+
+console.log('\n=== 7. an oversized Retry-After cannot hold the lane for a day ===')
+{
+  // Measured 2026-11-22: one 429 carrying `Retry-After: 70411` opened a
+  // 19.6-hour window on an exit that answered 200 seventeen minutes later. The
+  // header is attacker-adjacent (a CDN or WAF can set it), so it is clamped on
+  // write; a row already on disk from an older build is clamped on read too.
+  const before = turns.length
+  script.push({ status: 429, headers: { 'retry-after': '70411' }, body: { type: 'error', error: { type: 'FreeUsageLimitError', message: 'Free usage limit reached.' } } })
+  const capped = await turn()
+  check('the turn still fails with quota', [capped.ok, capped.code], [false, CODE.quota])
+  check('exactly one request reached the wall', turns.length, before + 1)
+  const lane = stores.availability.get().lane
+  check('the written window is clamped to 30 minutes', lane.retryAt - Date.now() <= 30 * 60 * 1000 + 5_000, true)
+
+  // A row recorded by an older build: 19.6 hours counted from a verdict taken now.
+  const since = Date.now()
+  stores.availability.edit(value => ({
+    ...value,
+    lane: { state: 'quota', at: since, retryAt: since + 19.6 * 3600e3, message: 'Free usage limit reached.' },
+  }))
+  const gate = runtime.laneGate()
+  check('a stale oversized row reads as a 30-minute window', gate.ok === false && gate.retryAt - since <= 30 * 60 * 1000 + 1_000, true)
+  check('the gate reports when the verdict was taken', gate.since, since)
   runtime.clearLaneBreaker()
 }
 

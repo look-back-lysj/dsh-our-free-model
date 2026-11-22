@@ -148,15 +148,21 @@ console.log('\n=== 4. the v2 tool gate: read + shell, official definitions, no t
   up.applyFingerprint(claude, 'claude')
   check('Messages shape uses input_schema', declared(claude, 'read').input_schema.required, ['path'])
 
-  // A caller tool that reuses a gate name with another definition binds to the
-  // official spelling (v1.4.7 BindOfficial) — the caller's own definition rides
-  // the wire under `read`, and the response side restores the caller's spelling.
+  // A caller tool that reuses a gate name with another definition takes an
+  // opaque handle; the official definition keeps the official name. A caller
+  // schema at the official name is what the upstream answers with 429
+  // (measured 2026-11-22 against DSH's own `bash` tool).
   const caller = { tools: [{ type: 'function', function: { name: 'read', description: 'the caller read', parameters: { type: 'object', properties: {} } } }] }
   const map = up.applyFingerprint(caller, false)
-  check('only one declaration carries the gate name', caller.tools.filter(tool => tool.function.name === 'read').length, 1)
-  check('…and it carries the caller definition under the official name', declared(caller, 'read').function.description, 'the caller read')
-  check('the official read is not appended beside it', caller.tools.filter(tool => tool.function.name === 'read').length, 1)
-  check('…and the wire name restores the caller name', up.restoreToolName('read', map), 'read')
+  const handle = clientToolWireName('read')
+  check('the caller read takes a handle', caller.tools.filter(tool => tool.function.name === handle).length, 1)
+  check('the official read is declared once', caller.tools.filter(tool => tool.function.name === 'read').length, 1)
+  check('the official read keeps the official definition', declared(caller, 'read').function.parameters.required, ['path'])
+  // The caller's words survive on its own handle; only the ASCII spaces become
+  // NBSP, which is what stops a literal phrase in a caller description matching
+  // an upstream rule.
+  check('…and the caller handle keeps the caller words', caller.tools.find(tool => tool.function.name === handle).function.description, 'the\u00a0caller\u00a0read')
+  check('…and the wire name restores the caller name', up.restoreToolName(handle, map), 'read')
 }
 
 console.log('\n=== 5. the User-Agent is the canonical v2 token, whatever the host attributes ===')

@@ -46,3 +46,205 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+==============================================================================
+
+## Third-party notices
+
+This appendix is part of the distribution. It carries the licence texts for
+third-party material shipped inside this plugin's release set, inlined into the
+generated bundles `src/o2a.js` and `src/token-saver.js`. It lives here rather than in
+its own file because the legacy release set has a hard 80-file cap and is at 80.
+
+It is not the full acknowledgements list: projects that informed the design without
+contributing shipped bytes are credited in README.md and README_EN.md.
+
+---
+
+## opencode — MIT
+
+**What is used.** The free lane must reproduce the official OpenCode client's request
+body byte for byte, because the free tier fingerprints it. Two assets are therefore
+generated verbatim from a pinned upstream tag and inlined into `src/o2a.js`:
+
+| Asset | Upstream path (tag `v2.2.3`) |
+| --- | --- |
+| `src/o2a/assets/ofm-agent-context.txt` | `packages/core/src/session/runner/prompt/system.txt` |
+| `src/o2a/assets/ofm-tool-contracts.json` | 13 files under `packages/core/src/tool/plugin/` |
+
+They are produced by `scripts/fetch-opencode-assets.mjs` and
+`scripts/build-o2a-assets.mjs`; per-file blob SHAs and regeneration steps are in
+[docs/opencode-assets.md](docs/opencode-assets.md). Do not edit them by hand — a
+rewritten description is answered with `429 FreeUsageLimitError`, which reads like a
+quota wall rather than a shape error.
+
+**Upstream.** <https://github.com/sst/opencode> — tag `v2.2.3`.
+
+```
+MIT License
+
+Copyright (c) 2025 opencode
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## RTK — Apache-2.0 (CLI only)
+
+**What is used.** The tool-output compaction filters under `src/token-saver/compact/` were
+originally adapted from the RTK command filters and have since been rewritten. They still
+reproduce RTK's output shapes, deliberately: those shapes are what a model has been trained
+to read, so changing them would change model behaviour rather than make the code more
+original. The functions whose behaviour follows upstream:
+
+| This repository | Upstream (Rust) |
+| --- | --- |
+| `filters/gitStatus.js` | `git::format_status_output` |
+| `filters/gitDiff.js` | `git::compact_diff` |
+| `filters/grep.js` | `grep_wrapper` |
+| `filters/find.js` | `find_wrapper` |
+| `filters/ls.js` | `compact_ls` |
+
+The remaining filters (`gitLog`, `tree`, `dedupLog`, `smartTruncate`, `readNumbered`,
+`searchList`, `buildOutput`), the detector, the registry and the wire walkers are this
+project's own, but they share RTK's thresholds and output markers for the same reason.
+
+**Which half of RTK.** RTK splits its licence by component. The ported functions live
+under `src/cmds/` — the command filters, covered by the repository's root `LICENSE`,
+which is Apache-2.0. This project does **not** use `engine/` or `proxy/`, which are
+BUSL-1.1 and are distributed separately by upstream. Nothing from the Business Source
+Licensed half is present in this repository or in its release set.
+
+**Upstream.** <https://github.com/rtk-ai/rtk> — root `LICENSE`, Apache-2.0.
+Upstream publishes no `NOTICE` file. The Apache-2.0 text is not duplicated here:
+`vendor/magpie/NOTICE.md` ships the complete Apache-2.0 licence with every install and is
+listed in `package.json` `files`, so the text travels with this copy already.
+
+---
+
+## 9router — MIT
+
+**What is used.** Eight scripts under `scripts/probes/` are byte-for-byte copies of
+9router's probe scripts, with only the probe base URL changed:
+
+| This repository | Upstream |
+| --- | --- |
+| `scripts/probes/mint-ids.mjs` | `.probe.mjs` |
+| `scripts/probes/free-lane-survey.mjs` | `.probe2.mjs` |
+| `scripts/probes/availability-matrix.mjs` | `.probe3.mjs` |
+| `scripts/probes/tool-calling.mjs` | `.probe4.mjs` |
+| `scripts/probes/reasoning-effort-probe.mjs` | `.probe5.mjs` |
+| `scripts/probes/effort-repeat-sampling.mjs` | `.probe7.mjs` |
+| `scripts/probes/budget-dialects.mjs` | `.probe8.mjs` |
+| `scripts/probes/budget-and-vision.mjs` | `.probe9.mjs` |
+
+Each carries an MIT attribution block in its file header naming the upstream file.
+They are one-off evidence scripts behind the findings in `README.md`; they import
+9router's own modules, so they only run inside a 9router checkout, and they are **not
+in the release set** — `package.json` `files` does not include `scripts/`.
+
+The remaining `scripts/probes/` files are this project's own. The provider registry
+draws on 9router's catalogue for provider ids and endpoints, which are facts rather
+than implementation; see the acknowledgements in `README.md`.
+
+**Upstream.** <https://github.com/decolua/9router> — `LICENSE`, MIT.
+
+```
+MIT License
+
+Copyright (c) 2024-2026 decolua and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## Handled by their own files
+
+These ship their own licence and notice documents, both listed in `package.json` `files`, so
+their texts travel with every install without being duplicated here.
+
+| Project | Licence | Where |
+| --- | --- | --- |
+| Jet channel pack (`vendor/channel-pack/`) | MIT | `vendor/channel-pack/LICENSE` + `NOTICE.md` |
+| Magpie engine (`vendor/magpie/`) | MIT | `vendor/magpie/LICENSE` + `NOTICE.md` (includes the full Apache-2.0 text for the Go dependencies linked into the binary) |
+
+## Recorded, but with an open question
+
+| Project | Licence | Status |
+| --- | --- | --- |
+| Qoder auth WASM (`vendor/channel-pack/qoder-auth-wasm.wasm`) | **unresolved** | Retained at the owner's direction. The redistribution basis is **not** cleared, and this file says so rather than implying otherwise. See `工程控制/ORIGIN-REWRITE-01/contracts/qoder/wasm-contract.mjs`. |
+
+## Facts and protocol shapes, no copied implementation
+
+These contributed facts this project encodes — model ids, context windows, effort-level
+names, provider endpoints, protocol formats. Facts are not copyrightable and implementing a
+published protocol is not copying an implementation of it. Credited in the acknowledgements
+list in `README.md`.
+
+| Project | Licence |
+| --- | --- |
+| models.dev | MIT |
+| 9router | MIT |
+| trae-mate | MIT |
+| dsh-cline-pass | MIT |
+
+## Historical implementation sources — licence texts not bundled here
+
+Three projects informed the free lane's request shaping before it was rewritten. None of
+their code is vendored here, and the implementations that remain have since been rewritten
+against the wire behaviour rather than against their source. What survives is behaviour and
+vocabulary, not text.
+
+| Project | Licence | What remains |
+| --- | --- | --- |
+| opencode2api | **GPL-3.0** | Nothing textual. `src/o2a/toolshape.js` and `src/o2a/tool-renames.js` were rewritten; no function name, constant list or branch order is shared with `internal/gateway/toolshape.go` or `internal/protocol/tools.go`. The behaviour they implement — how a caller's tool surface is reshaped into the official one — was measured off the wire. The tool descriptions in `src/o2a/assets/ofm-tool-contracts.json` do overlap with `internal/gateway/opencode_tools.json`, but that is a shared ancestor, not a copy: both are generated from `sst/opencode` v2.2.3 (MIT), and this repository's copy is generated from that tag by `scripts/build-o2a-assets.mjs`. |
+| free-claude-code | **AGPL-3.0-only** | `src/local-optimize.js` was rewritten: the five request shapes are now a table of detectors with a documented evaluation order, and the ids (`quota`/`prefix`/`title`/`suggestion`/`filepath`) survive only because they are persisted configuration keys — renaming one would silently re-enable an optimization a user had switched off. `src/providers/registry.json` keeps 60 of its 61 historical provider ids for the same reason: they are user-visible config keys, and `docs/provider-compatibility.md` records the compatibility constraint. The registry content itself is rebuilt from models.dev and each entry's `notes` field says so. |
+| RTK | Apache-2.0 | The `src/token-saver/compact/` filters were rewritten. They still emit RTK's output markers and use its thresholds, because those markers are a wire format a model has been trained to read — changing them would change model behaviour, not make the code more original. The noise-directory list has the same membership but is regrouped by category rather than kept in upstream order. Full text above. |
+
+**This file still does not ship the GPL-3.0 or AGPL-3.0-only texts, and that is a deliberate
+position, not an oversight.** Shipping a licence text alongside code is not what creates or
+discharges a copyleft obligation — the obligation attaches to the code, and the question is
+whether any code here is a derivative work of those projects. After the rewrites there is no
+shared text and no shared identifier vocabulary left in either area; what remains is protocol
+behaviour, which is not copyrightable, and persisted configuration keys, which are not
+expression either. That is the project's reading, and it is recorded here rather than
+presented as a settled legal conclusion.
+
+The project's own verification notes say the same thing: `src/o2a/SYNC.md` records that the
+historical source was read and that a clean-room claim cannot be made — the rewrites were
+written by people who had read the prior implementations, which is why this section states
+the relationship plainly instead of claiming independence from the prior reading.

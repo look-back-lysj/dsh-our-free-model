@@ -41,11 +41,18 @@ export const FREE_LANE_GATE_TOOLS = ['read', 'shell'] as const
 const FREE_LANE_GATE_TOOL_SET = new Set<string>(FREE_LANE_GATE_TOOLS)
 
 /**
- * 官方定义（**逐字**取自 OpenCode v2.0.26 CLI；与 `src/upstream.js` 的同名
- * 常量必须保持一致 —— 两处不一致时以本文件为准并同步过去）。
+ * 官方定义（**逐字**取自 OpenCode v2.0.26 CLI；与 `src/o2a/assets/` 的同名
+ * 资产必须保持一致 —— 两处不一致时以 `src/o2a/assets/` 为准并同步过去）。
  *
  * ⚠️ 不要改写措辞、不要精简 schema、不要调换键序：上游比对 description 与
- * parameters 的 JSON，任何改动都是 403 FreeTierError。
+ * parameters 的 JSON，任何改动都是 403 FreeTierError 或 429
+ * FreeUsageLimitError。
+ *
+ * ⚠️ 版本注记：本文件的措辞取自 v2.0.26，其 `shell` 描述把平台写死为
+ * Linux/bash。OFM 的免费车道跟随 `v2.2.3`（见 `src/o2a/version.js`），该版本
+ * 把同一句改成运行时模板 `Commands run on ${OS} using ${shell}.`，由
+ * `v2ShellDescription()` 按平台渲染 —— 两份资产在这一句上**有意不同**，
+ * `scripts/opencode-parity-test.mjs` 按平台分别断言。其余措辞逐字一致。
  */
 const GATE_TOOL_DEFINITIONS: Readonly<Record<string, { description: string; parameters: Record<string, unknown> }>> = Object.freeze({
   read: {

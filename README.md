@@ -131,7 +131,7 @@ EAC、客户端与订阅、资源库、API 接入、设置与**插件中心**）
 > `dsh-our-free-model-<版本>.tgz` 同源、同版本。只想走 npm 时可以装它：
 >
 > ```
-> dsh plugin --profile web add @ebony-vinyl/dsh-our-free-model@2.8.9
+> dsh plugin --profile web add @ebony-vinyl/dsh-our-free-model@2.9.0
 > ```
 >
 > 注意它的包名带 scope，因此挂载条目是 `@ebony-vinyl/dsh-our-free-model`，与下文
@@ -163,7 +163,7 @@ PROFILE_UPGRADE_REQUIRED: offline dependency migration is not yet available
 以真实目录手工安装时，使用可信源码打出的本地 tarball：
 
 1. 创建 `<DSH_HOME>/profiles/<profile>/vendor/`，在审核过的本仓库目录运行 `npm pack --ignore-scripts --pack-destination "<DSH_HOME>/profiles/<profile>/vendor"`，或将本仓库正式发布的同版本 tarball 放入该目录。本地打包不执行 npm 发布。
-2. 在 profile 的 `package.json` 的 dependencies 中加入 `"dsh-our-free-model": "file:./vendor/dsh-our-free-model-2.8.9.tgz"`。文件名版本跟随仓库 `package.json`，不要改成同名 npm 注册表版本；再通过宿主的安装流程解析依赖。
+2. 在 profile 的 `package.json` 的 dependencies 中加入 `"dsh-our-free-model": "file:./vendor/dsh-our-free-model-2.9.0.tgz"`。文件名版本跟随仓库 `package.json`，不要改成同名 npm 注册表版本；再通过宿主的安装流程解析依赖。
 3. 在 dsh.profile.bundles 末尾追加 `"dsh-our-free-model"`。
 
 包管理器拥有这份安装的字节时，同时将 bundle config 或插件 `settings.json` 的 `distribution` 设为 `managed`，由包管理器统一更新；应用内升级、公告 feed 与热重载会停用，模型功能保留。以后更新时替换可信 tarball 并同步依赖路径，避免包管理器按旧锁文件恢复旧版本。
@@ -377,7 +377,7 @@ src/anthropic.js /v1/messages 的 Anthropic Messages 编解码与本地 token �
 src/token-saver/index.js 压缩管线：提示词注入 -> 工具输出压缩，按字节留痕、失败开放
 src/token-saver/inject.js chat / messages / responses 三线的幂等注入与撤销
 src/token-saver/prompts.js caveman / ponytail 两族提示词与档位
-src/token-saver/rtk/ 工具输出过滤器：git diff/status/log、grep、find、ls、tree、
+src/token-saver/compact/ 工具输出过滤器：git diff/status/log、grep、find、ls、tree、
  构建日志、编号转储、搜索清单、重复日志行
 src/local-optimize.js 五个本地应答：额度探测、命令前缀、会话标题、建议模式、文件路径
 src/combos.js 降级链：虚拟清单行、两种策略、容量取交集
@@ -786,7 +786,7 @@ DeepSeek Harness 桌面端（Electron 壳）与 DSH Tauri：使用内核提供�
 
 - [opencode2api](https://github.com/jasonxu114514/opencode2api)（GPL-3.0）：历史免费车道请求整形来源；2.8.6 的实现变化和已删除资产见 [维护说明](src/o2a/SYNC.md)。
 - [free-claude-code](https://github.com/Alishahryar1/free-claude-code)（AGPL-3.0-only）：历史供应商目录及五个本地应答的来源；2.8.6 重写本地应答并重建目录，历史 ID 的处理见 [兼容说明](docs/provider-compatibility.md)。
-- [9router](https://github.com/decolua/9router)（MIT）：部分提供商目录，以及免费车道的请求形状参考。
+- [9router](https://github.com/decolua/9router)（MIT）：部分提供商目录、免费车道的请求形状参考，以及 `scripts/probes/` 下 8 个取证脚本的原始来源——那 8 个文件是逐字副本（只改了探测的 base URL），文件头保留了 MIT 归属，许可证全文见 [LICENSE](LICENSE#9router--mit)。它们 import 9router 自己的模块，只在该项目的 checkout 内可运行，不进发行集。
 - [models.dev](https://github.com/anomalyco/models.dev)（MIT）：模型窗口、输出上限与思考档位。
 - [trae-mate](https://github.com/luckymiaow/trae-mate)（MIT）：TRAE 签到流程参考。
 - [dsh-cline-pass](https://github.com/codeOct/dsh-cline-pass)（MIT）：Cline 额度与请求记录参考。

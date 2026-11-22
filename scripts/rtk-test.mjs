@@ -24,23 +24,23 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { compressMessages, compressRequest, compressText, describeSavings, formatRtkLog } from '../src/token-saver/rtk/index.js'
-import { autoDetectFilter } from '../src/token-saver/rtk/autodetect.js'
-import { allFilters, resolveFilter } from '../src/token-saver/rtk/registry.js'
-import { safeApply } from '../src/token-saver/rtk/applyFilter.js'
-import { MIN_COMPRESS_SIZE } from '../src/token-saver/rtk/constants.js'
-import { gitDiff } from '../src/token-saver/rtk/filters/gitDiff.js'
-import { gitStatus } from '../src/token-saver/rtk/filters/gitStatus.js'
-import { gitLog } from '../src/token-saver/rtk/filters/gitLog.js'
-import { buildOutput } from '../src/token-saver/rtk/filters/buildOutput.js'
-import { grep } from '../src/token-saver/rtk/filters/grep.js'
-import { find } from '../src/token-saver/rtk/filters/find.js'
-import { ls } from '../src/token-saver/rtk/filters/ls.js'
-import { tree } from '../src/token-saver/rtk/filters/tree.js'
-import { dedupLog } from '../src/token-saver/rtk/filters/dedupLog.js'
-import { smartTruncate } from '../src/token-saver/rtk/filters/smartTruncate.js'
-import { readNumbered } from '../src/token-saver/rtk/filters/readNumbered.js'
-import { searchList } from '../src/token-saver/rtk/filters/searchList.js'
+import { compressMessages, compressRequest, compressText, describeSavings, formatRtkLog } from '../src/token-saver/compact/index.js'
+import { autoDetectFilter } from '../src/token-saver/compact/autodetect.js'
+import { allFilters, resolveFilter } from '../src/token-saver/compact/registry.js'
+import { safeApply } from '../src/token-saver/compact/applyFilter.js'
+import { MIN_COMPRESS_SIZE } from '../src/token-saver/compact/constants.js'
+import { gitDiff } from '../src/token-saver/compact/filters/gitDiff.js'
+import { gitStatus } from '../src/token-saver/compact/filters/gitStatus.js'
+import { gitLog } from '../src/token-saver/compact/filters/gitLog.js'
+import { buildOutput } from '../src/token-saver/compact/filters/buildOutput.js'
+import { grep } from '../src/token-saver/compact/filters/grep.js'
+import { find } from '../src/token-saver/compact/filters/find.js'
+import { ls } from '../src/token-saver/compact/filters/ls.js'
+import { tree } from '../src/token-saver/compact/filters/tree.js'
+import { dedupLog } from '../src/token-saver/compact/filters/dedupLog.js'
+import { smartTruncate } from '../src/token-saver/compact/filters/smartTruncate.js'
+import { readNumbered } from '../src/token-saver/compact/filters/readNumbered.js'
+import { searchList } from '../src/token-saver/compact/filters/searchList.js'
 
 let failures = 0
 const check = (name, fn) => {
@@ -846,7 +846,7 @@ check('registry resolves names and Rust aliases', () => {
 })
 
 check('the module tree imports nothing but its own relative files', () => {
-  const root = fileURLToPath(new URL('../src/token-saver/rtk/', import.meta.url))
+  const root = fileURLToPath(new URL('../src/token-saver/compact/', import.meta.url))
   const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const absolute = path.join(dir, entry.name)
     return entry.isDirectory() ? walk(absolute) : [absolute]

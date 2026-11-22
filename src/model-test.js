@@ -19,7 +19,16 @@
 import { CODE, UpstreamError } from './http.js'
 import { decodeWindow } from './store.js'
 import { windowTokens } from './stream.js'
+import { findBunExecutable } from './bun-fetch.js'
 export const MODEL_TEST_TIMEOUT_MS = 300_000
+
+/**
+ * The opening of the sentence `src/egress.js` writes when an inference POST
+ * cannot start because no native Bun is resolvable. Kept as a prefix rather
+ * than a shared constant because the message is deliberately bilingual and the
+ * persisted copy is truncated to 200 characters.
+ */
+const BUN_MISSING_DETAIL_PREFIX = 'OpenCode 免费车道推理需要本机 Bun'
 
 /** Only a nonempty, normally finished tool-free answer establishes a successful text test. */
 export async function measureModelTest(stream, now = Date.now) {
@@ -88,8 +97,14 @@ export async function runModelTest(createStream, { signal, timeoutMs = MODEL_TES
   }
 }
 
-/** Keep manual samples apart from the automatic round so an older probe cannot erase them. */
-export function modelAvailability(id, snapshot, listed = false) {
+/**
+ * Keep manual samples apart from the automatic round so an older probe cannot erase them.
+ *
+ * `options.bunAvailable` lets a caller pin the transport verdict. Without it the
+ * executable is looked up live, which is the correct default: the lane may have
+ * been started before Bun was installed.
+ */
+export function modelAvailability(id, snapshot, listed = false, { bunAvailable } = {}) {
   // 旧出口的测量仍保留在磁盘，但不再作为当前出口的可用性判定。
   const probeRow = listed ? undefined : snapshot?.results?.[id]
   const manualRow = snapshot?.manualResults?.[id]
@@ -99,12 +114,19 @@ export function modelAvailability(id, snapshot, listed = false) {
   // an older in-flight probe cannot supersede it merely by finishing later.
   // Older saved snapshots have only `at`, which retains their previous order.
   const measured = manual && (!probe || manual.at >= (probe.startedAt ?? probe.at)) ? manual : probe
+  // A cached "no Bun" sentence describes the machine at the moment of that
+  // test, not the model. Once an executable resolves again, replaying it would
+  // label every tested card broken even though the transport works: hide the
+  // cached sentence and let the card fall back to its generic unknown hint.
+  // Genuine model failures keep their detail untouched.
+  const bunDetail = typeof measured?.detail === 'string' && measured.detail.startsWith(BUN_MISSING_DETAIL_PREFIX)
+  const transportReady = bunDetail && (bunAvailable === undefined ? findBunExecutable() !== undefined : bunAvailable !== false)
   return {
     availabilitySource: measured === manual && manual ? 'manual'
       : measured?.source === 'passive' ? 'passive'
         : listed ? 'listing' : 'probe',
     availability: measured?.state ?? 'unknown',
-    detail: measured?.detail ?? '', probedAt: measured?.at ?? 0,
+    detail: transportReady ? '' : measured?.detail ?? '', probedAt: measured?.at ?? 0,
     ttftMs: measured?.ttftMs, latencyMs: measured?.latencyMs,
   }
 }

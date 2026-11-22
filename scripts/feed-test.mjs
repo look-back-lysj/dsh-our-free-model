@@ -270,6 +270,49 @@ check('an announcement that expires while the process runs stops rendering (view
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
+// A retracted announcement cannot reach an install that already cached the
+// item: the cache is a snapshot of the old document, so it carries no
+// `expiresAt` to filter on and the urgent modal keeps opening on every visit.
+// The fix bounds the right to interrupt at the consumer instead of trusting a
+// snapshot indefinitely.
+check('a stale cache keeps the entry but loses the right to interrupt (retraction reaches old caches)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-feed-stale-'))
+  const cacheFile = path.join(dir, 'f.json')
+  const write = fetchedAt => fs.writeFileSync(cacheFile, JSON.stringify({
+    fetchedAt, source: 'raw',
+    // Exactly the shape an install would hold: no expiresAt, because the
+    // retraction had not been written yet when this copy was fetched.
+    announcements: [item({ id: 'retracted', level: 'urgent', holdSeconds: 5 }), item({ id: 'normal' })],
+  }))
+  const open = () => {
+    const store = new AnnouncementFeed({ settings: () => ({}), cacheFile, onArrival: () => {}, defaultSources: CONTROLLED_DEFAULTS })
+    store.load()
+    return store.view({}).items
+  }
+
+  // Fresh copy: the urgent item is allowed to interrupt.
+  write(Date.now())
+  assert.equal(open().find(row => row.id === 'retracted').muted, undefined, 'a fresh snapshot still raises the modal')
+  assert.equal(open().find(row => row.id === 'normal').muted, undefined, 'non-urgent rows are never muted')
+
+  // One hour old: still inside the window, still allowed (absorbs one missed poll).
+  write(Date.now() - 60 * 60_000)
+  assert.equal(open().find(row => row.id === 'retracted').muted, undefined)
+
+  // Past the window: listed, but muted — this is what stops a retracted
+  // announcement from interrupting forever on an unreachable network.
+  write(Date.now() - 3 * 60 * 60_000)
+  const stale = open()
+  assert.ok(stale.some(row => row.id === 'retracted'), 'the entry is still listed; only the interruption is withheld')
+  assert.equal(stale.find(row => row.id === 'retracted').muted, true, 'a stale snapshot may not open a full-screen modal')
+  assert.equal(stale.find(row => row.id === 'normal').muted, undefined, 'muting is scoped to urgent rows')
+
+  // A cache that never completed a poll is not trustworthy either.
+  write(0)
+  assert.equal(open().find(row => row.id === 'retracted').muted, true, 'never-fetched cache cannot interrupt')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
 server.close()
 if (failures === 0) console.log('feed-test: OK')
 else { console.error(`feed-test: ${failures} failure(s)`); process.exit(1) }

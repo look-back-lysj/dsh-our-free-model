@@ -6,6 +6,7 @@ import crypto from 'node:crypto'
 import { createModelRuntime, createRuntimeStores } from '../../src/core/runtime.js'
 import { generateKey, rankLanAddresses, startForwardServer, startLanRelay } from '../../src/forward.js'
 import { isLoopbackHost } from '../../src/trust.js'
+import { setFreeLaneProxies, setFreeLaneMaxTries } from '../../src/egress.js'
 import { createManagement } from './management.mjs'
 import { createStandaloneEac } from './eac.mjs'
 import { createChannelRuntime } from './channels/runtime.mjs'
@@ -175,6 +176,27 @@ export async function startStandalone({
     relayRequestedPort = undefined
     await Promise.all([current?.close(), target?.close()])
   }
+  /**
+   * Apply the stored exit pool to the egress layer.
+   *
+   * The pool is module-level state in `src/egress.js`, not a store this service
+   * owns, so it has to be pushed after every settings write and once at startup.
+   * A stored entry that no longer parses is dropped rather than failing the boot:
+   * the lane then falls back to the global outlet.
+   */
+  function applyFreeLaneExits() {
+    const lane = stores.settings.get().freeLane ?? {}
+    const proxies = Array.isArray(lane.proxies) ? lane.proxies : []
+    const legacy = String(lane.proxyUrl ?? '').trim()
+    const effective = proxies.length > 0 ? proxies : (legacy === '' ? [] : [legacy])
+    try {
+      setFreeLaneProxies(effective)
+      setFreeLaneMaxTries(lane.maxTries)
+    } catch (error) {
+      logger.warn?.(`our-free-model standalone: a lane exit address is invalid (${error?.message ?? error}); the lane keeps its current exits`)
+      try { setFreeLaneProxies([]) } catch { /* nothing left to clear */ }
+    }
+  }
   function reconcileRelay() {
     relayChanges = relayChanges.then(async () => {
       const value = stores.settings.get()
@@ -316,6 +338,10 @@ export async function startStandalone({
         lan: lanState(),
       }),
       onSettingsChanged: async () => {
+        // The free lane's exit pool is module-level state in the egress layer, so
+        // it has to be re-applied after every write — the settings route only
+        // validates and stores.
+        applyFreeLaneExits()
         if (!refreshInFlight) scheduleRefresh()
         await reconcileRelay()
       },
@@ -362,6 +388,7 @@ export async function startStandalone({
       if (settings.get().autoUpdateExtensions === true) void extensions.autoUpdate().catch(() => {})
     }, 6 * 60 * 60 * 1000)
     registryTimer.unref?.()
+    applyFreeLaneExits()
     await reconcileRelay()
 
     function scheduleRefresh() {

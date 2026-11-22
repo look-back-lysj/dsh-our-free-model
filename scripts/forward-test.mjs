@@ -815,19 +815,24 @@ check('the adapter conversion keeps every caller tool', () => {
   assert.equal(declared.length, callerTools.length)
 })
 
-check('a caller list binds what it can and renames the rest; the official set completes', () => {
+check('a caller list renames every foreign tool; the official set completes', () => {
   const body = { tools: toToolDefs([normalizeTool(openAiTool('pwsh')), normalizeTool(openAiTool('glob'))], 'chat') }
   applyFingerprint(body, false)
-  // v1.4.7 BindOfficial: `glob` folds onto the official spelling with the
-  // caller's own definition; `pwsh` has no official and takes the opaque
-  // rename; the remaining officials are appended exactly once.
+  // An official name is reserved for the official definition. `glob` folds onto
+  // the official spelling but carries the caller's own prose, so it takes an
+  // opaque handle like `pwsh` — a caller schema at an official name is answered
+  // 429 (measured 2026-11-22); the official set, `glob` included, is appended
+  // afterwards and declared exactly once.
   const names = body.tools.map(tool => tool.function.name)
   const clientWires = names.filter(name => name.startsWith(CLIENT_TOOL_PREFIX))
-  assert.deepEqual(clientWires, [clientToolWireName('pwsh')])
-  const bound = body.tools.find(tool => tool.function.name === 'glob')
-  assert.equal(bound.function.description, 'glob tool')
+  assert.deepEqual(clientWires, [clientToolWireName('pwsh'), clientToolWireName('glob')])
+  const renamedGlob = body.tools.find(tool => tool.function.name === clientToolWireName('glob'))
+  assert.ok(renamedGlob, 'the caller glob rides an opaque handle')
+  // The caller's words survive under the handle; only ASCII spaces become NBSP,
+  // which stops a literal phrase in a caller description matching an upstream rule.
+  assert.equal(renamedGlob.function.description, 'glob\u00a0tool')
   const officials = names.filter(name => !name.startsWith(CLIENT_TOOL_PREFIX))
-  assert.deepEqual(officials.filter(name => name !== 'glob'), V2_OFFICIAL_TOOL_ORDER.filter(name => name !== 'glob'))
+  assert.deepEqual(officials, [...V2_OFFICIAL_TOOL_ORDER])
   assert.equal(officials.filter(name => name === 'glob').length, 1)
   assert.equal(String(body.tools[0].function.description).includes('unavailable'), false)
   assert.equal(body.tool_choice, undefined)
@@ -841,11 +846,19 @@ check('an empty caller list still gets the official set, and no tool_choice', ()
   assert.equal(body.tool_choice, undefined)
 })
 
-await checkAsync('a caller tool reusing a gate name binds and maps back', async () => {
+await checkAsync('a caller spelling of a gate name takes a handle and maps back', async () => {
   const body = { tools: toToolDefs([normalizeTool(openAiTool('read'))], 'chat') }
   const map = applyFingerprint(body, false)
+  const wire = clientToolWireName('read')
+  // The official name carries the official schema; the caller's own bytes live
+  // on the handle. Mapping "read" itself would be wrong — that name no longer
+  // refers to the caller's tool on the wire.
   assert.equal(body.tools.filter(tool => tool.function.name === 'read').length, 1)
-  assert.equal(body.tools.find(tool => tool.function.name === 'read').function.description, 'read tool')
+  assert.deepEqual(body.tools.find(tool => tool.function.name === 'read').function.parameters.required, ['path'])
+  const handle = body.tools.find(tool => tool.function.name === wire)
+  assert.ok(handle, 'the caller read rides an opaque handle')
+  assert.equal(handle.function.description, 'read\u00a0tool')
+  assert.equal(map.get(wire), 'read')
   assert.equal(map.get('read'), undefined)
 })
 

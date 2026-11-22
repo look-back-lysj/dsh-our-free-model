@@ -6,22 +6,31 @@
  * refused) still holds, and on top of it the reference adds the facts its
  * releases verified: **no foreign client tool name may reach the wire** (another
  * client's vocabulary — Claude Code's `ReportFindings` + `ScheduleWakeup` — is
- * refused), so every named client tool either **binds to an official name**
- * (v1.4.7 `BindOfficial`: a folded-name match rides the wire under the
- * official spelling with the caller's own definition) or is renamed to an
- * opaque `clint_<digest>`; the **full 13-tool official CLI set** is appended
- * from the captured `ofm-tool-contracts.json` minus whatever is already served;
- * and **ghost call history is dropped** (calls naming tools this request no
- * longer serves, with their paired results). Each case below is one of the
- * behaviors the shaping must keep.
+ * refused), so every named client tool is renamed to an opaque
+ * `mcp_<digest>`. An official name is reserved for the official definition:
+ * a caller spelling that folds onto one (`bash` → `shell`, `Read` → `read`)
+ * still takes a handle, because the upstream compares the declaration at the
+ * official name and answers a caller schema there with 429 (measured
+ * 2026-11-22 against DSH's own `bash` tool); the **full 13-tool official CLI
+ * set** is appended from the captured `ofm-tool-contracts.json`; and **ghost
+ * call history is dropped** (calls naming tools this request no longer serves,
+ * with their paired results). Each case below is one of the behaviors the
+ * shaping must keep.
  *
  * Run: node scripts/fingerprint-test.mjs
  */
 
 import fs from 'node:fs'
-import { applyFingerprint, FINGERPRINT_TOOLS, restoreToolName, O2A_PORTED_VERSION } from '../src/upstream.js'
+import { applyFingerprint, CLIENT_UA, FINGERPRINT_TOOLS, restoreToolName } from '../src/upstream.js'
 import { clientToolWireName, CLIENT_TOOL_PREFIX } from '../src/o2a/tool-renames.js'
-import { V2_OFFICIAL_TOOL_ORDER } from '../src/o2a/official-tools.js'
+import { V2_OFFICIAL_TOOL_ORDER, v2ShellDescription } from '../src/o2a/official-tools.js'
+
+/**
+ * The transformation this lane applies to a caller tool's own prose: ASCII
+ * spaces become NBSP, so a literal phrase cannot match an upstream rule while
+ * the model still reads the same words.
+ */
+const nbsp = text => text.replaceAll(' ', '\u00a0')
 
 let failures = 0
 const check = (name, actual, expected) => {
@@ -48,42 +57,88 @@ const official = (style, name) => {
 /** The opaque wire name the shaper gives a client tool. */
 const wireNameOf = name => clientToolWireName(name)
 
-console.log('=== 1. client tools bind or rename; the official set completes the wire ===')
+console.log('=== 1. client tools rename; the official set completes the wire ===')
 {
   const body = { tools: [chatTool('pwsh'), chatTool('Read'), chatTool('write')] }
   const map = applyFingerprint(body, false)
   check('read and shell are declared', FINGERPRINT_TOOLS.filter(name => declared(body).includes(name)), ['read', 'shell'])
   check('no client name survives the wire', declared(body).some(name => !name.startsWith(CLIENT_TOOL_PREFIX) && !V2_OFFICIAL_TOOL_ORDER.includes(name)), false)
-  // v1.4.7 BindOfficial: `Read` and `write` fold onto the official spellings
-  // and ride the wire under them with the caller's own definitions; `pwsh`
-  // has no official and takes the opaque rename.
-  check('case variants bind instead of renaming', declared(body).includes(wireNameOf('Read')), false)
-  check('Read rides the official read name', declared(body).includes('read'), true)
-  check('write binds to itself', declared(body).filter(name => name === 'write').length, 1)
-  check('every bound call maps back to the caller spelling', restoreToolName('read', map), 'Read')
+  // A caller spelling that folds onto an official name still takes an opaque
+  // handle: the official name is reserved for the official definition.
+  check('a case variant is renamed, not bound', declared(body).includes(wireNameOf('Read')), true)
+  check('Read does not displace the official read', declared(body).filter(name => name === 'read').length, 1)
+  check('write is renamed too', declared(body).filter(name => name === wireNameOf('write')).length, 1)
+  check('write does not displace the official write', declared(body).filter(name => name === 'write').length, 1)
+  check('the official read keeps the official schema', body.tools.find(tool => tool.function.name === 'read').function.parameters.required, ['path'])
+  check('the caller handle maps back to its spelling', restoreToolName(wireNameOf('Read'), map), 'Read')
   check('the opaque rename still maps back', restoreToolName(wireNameOf('pwsh'), map), 'pwsh')
-  check('one binding and one rename were recorded', map.size, 2)
+  check('all three caller names were renamed', map.size, 3)
   check('the full official set follows', V2_OFFICIAL_TOOL_ORDER.every(name => declared(body).includes(name)), true)
-  const read = body.tools.find(tool => tool.function.name === 'read')
-  check('the bound read keeps the caller schema', read.function.parameters.properties.x, { type: 'string' })
-  const appendedRead = body.tools.filter(tool => tool.function.name === 'read')
-  check('the official read is not appended a second time', appendedRead.length, 1)
+  check('the handle keeps the caller schema', body.tools.find(tool => tool.function.name === wireNameOf('Read')).function.parameters.properties.x, { type: 'string' })
+  check('the official read is not duplicated', body.tools.filter(tool => tool.function.name === 'read').length, 1)
   check('official chat tools carry the client strict flag', body.tools.filter(tool => V2_OFFICIAL_TOOL_ORDER.includes(tool.function?.name) && tool.function.strict !== undefined).every(tool => tool.function.strict === false), true)
   check('renamed caller tools keep the caller’s shape', body.tools.find(tool => tool.function.name === wireNameOf('pwsh')).function.strict, undefined)
   check('the model is told the injected tools are placeholders', /placeholders in this session/.test(noteOf(body)), true)
   check('…and no tool_choice is claimed', body.tool_choice, undefined)
 }
 
-console.log('\n=== 2. a caller tool reusing a gate name binds to it, not an opaque ===')
+console.log('\n=== 1b. an official name never carries a caller schema (live 429, 2026-11-22) ===')
+{
+  // DSH's own `bash` tool under the official `shell` name answered 429; the
+  // same bytes under an opaque handle answered 200. The gate reads what is
+  // declared at the official name, so that name must never hold caller bytes.
+  const dshBash = {
+    type: 'function',
+    function: {
+      name: 'bash',
+      description: 'Execute a bash command (`bash -c`) and return its stdout/stderr.',
+      parameters: {
+        type: 'object',
+        properties: { description: { type: 'string' }, command: { type: 'string' } },
+        required: ['description', 'command'],
+      },
+    },
+  }
+  const body = { tools: [dshBash] }
+  applyFingerprint(body, false)
+  check('the caller bash is opaque', declared(body).includes(wireNameOf('bash')), true)
+  check('the caller schema stays on the handle', body.tools.find(tool => tool.function.name === wireNameOf('bash')).function.parameters.properties.description, { type: 'string' })
+  const officialShell = body.tools.find(tool => tool.function.name === 'shell').function
+  check('the official shell is declared verbatim', officialShell.parameters.required, ['command'])
+  check('the official shell carries none of the caller properties', Object.hasOwn(officialShell.parameters.properties ?? {}, 'description'), false)
+}
+
+console.log('\n=== 1c. a genuine MCP name survives the restore path (regression) ===')
+{
+  // The handle namespace is `mcp_`, and a real MCP tool is spelled `mcp__…`.
+  // A resolver that strips the namespace from anything starting with it turns
+  // `mcp__github__search` into `_github__search` — a tool the caller never
+  // declared. Handles are recognised by their whole shape, so the real name
+  // passes through untouched.
+  const body = { tools: [chatTool('mcp__github__search')] }
+  const map = applyFingerprint(body, false)
+  const handle = wireNameOf('mcp__github__search')
+  check('the MCP tool is renamed like any caller tool', declared(body).includes(handle), true)
+  check('its handle maps back to the MCP spelling', restoreToolName(handle, map), 'mcp__github__search')
+  check('a bare MCP name is not stripped', restoreToolName('mcp__github__search', map), 'mcp__github__search')
+  check('an orphan handle is passed through, not trimmed to a digest', restoreToolName('mcp_0123456789ab', map), 'mcp_0123456789ab')
+  check('an old clint_ handle that is in the map still maps back', (() => {
+    const legacy = new Map([['clint_0123456789ab', 'old_tool']])
+    return restoreToolName('clint_0123456789ab', legacy)
+  })(), 'old_tool')
+}
+
+console.log('\n=== 2. a caller spelling of a gate name takes a handle ===')
 {
   const body = { tools: [chatTool('read'), chatTool('read_client'), chatTool('Edit')] }
   const map = applyFingerprint(body, false)
-  check('the bound read is singular', body.tools.filter(tool => tool.function.name === 'read').length, 1)
-  check('the caller read maps back as itself', restoreToolName('read', map), 'read')
-  check('Edit binds to the official edit', declared(body).includes('edit'), true)
-  check('the official read is the only read', declared(body).filter(name => name === 'read').length, 1)
+  check('the official read is singular', body.tools.filter(tool => tool.function.name === 'read').length, 1)
+  check('the caller read maps back from its handle', restoreToolName(wireNameOf('read'), map), 'read')
+  check('Edit takes a handle too', declared(body).includes(wireNameOf('Edit')), true)
+  check('the official edit is injected', declared(body).filter(name => name === 'edit').length, 1)
   check('the unmatched spelling still renames opaquely', declared(body).includes(wireNameOf('read_client')), true)
-  check('no caller name survives unbound', declared(body).slice(0, 3).every(name => name.startsWith(CLIENT_TOOL_PREFIX) || V2_OFFICIAL_TOOL_ORDER.includes(name)), true)
+  check('no caller name survives unbound', declared(body).slice(0, 3).every(name => name.startsWith(CLIENT_TOOL_PREFIX)), true)
+  check('the official read keeps the official schema', body.tools.find(tool => tool.function.name === 'read').function.parameters.required, ['path'])
 }
 
 console.log('\n=== 3. a caller tool that already carries the official definition is the official declaration ===')
@@ -96,13 +151,13 @@ console.log('\n=== 3. a caller tool that already carries the official definition
   check('environment context is still supplied', /<env>/.test(noteOf(body)), true)
 }
 
-console.log('\n=== 4. duplicate declarations: the first binds, the second renames opaquely ===')
+console.log('\n=== 4. duplicate declarations: one wire name, one declaration ===')
 {
   const body = { tools: [chatTool('shell'), chatTool('shell')] }
   applyFingerprint(body, false)
   const shellWires = declared(body).filter(name => name.startsWith(CLIENT_TOOL_PREFIX))
-  check('the second copy lands on one opaque name', new Set(shellWires).size, 1)
-  check('the official shell is still singular', declared(body).filter(name => name === 'shell').length, 1)
+  check('the duplicate caller declaration is dropped', shellWires.length, 1)
+  check('the official shell is singular', declared(body).filter(name => name === 'shell').length, 1)
 }
 
 console.log('\n=== 5. tool_choice: never none, retargeted to the wire name, auto on Responses ===')
@@ -117,7 +172,7 @@ console.log('\n=== 5. tool_choice: never none, retargeted to the wire name, auto
 
   const named = { tools: [chatTool('read')], tool_choice: { type: 'function', function: { name: 'read' } } }
   applyFingerprint(named, false)
-  check('a choice naming a bound tool keeps the official name', named.tool_choice.function.name, 'read')
+  check('a choice naming a renamed tool speaks its handle', named.tool_choice.function.name, wireNameOf('read'))
 
   const dangling = { tools: [chatTool('pwsh')], tool_choice: { type: 'function', function: { name: 'ghost_tool' } } }
   applyFingerprint(dangling, false)
@@ -149,7 +204,7 @@ console.log('\n=== 6. history calls follow the wire name; ghosts are dropped ===
   check('the caller message object is not mutated in place', assistant.tool_calls.length === 2, false)
 }
 
-console.log('\n=== 6b. a bound tool keeps its history under the official name ===')
+console.log('\n=== 6b. a renamed tool keeps its history under the handle ===')
 {
   const body = {
     tools: [chatTool('read')],
@@ -160,7 +215,7 @@ console.log('\n=== 6b. a bound tool keeps its history under the official name ==
   }
   applyFingerprint(body, false)
   const assistant = body.messages.find(message => Array.isArray(message.tool_calls))
-  check('the bound history call already speaks the wire name', assistant.tool_calls[0].function.name, 'read')
+  check('the history call follows the handle', assistant.tool_calls[0].function.name, wireNameOf('read'))
   check('its result survives', body.messages.filter(message => message.role === 'tool').length, 1)
 }
 
@@ -248,9 +303,10 @@ console.log('\n=== 7. the Messages (Claude) shape carries input_schema, not para
 
   const caller = { tools: [claudeTool('read')] }
   applyFingerprint(caller, 'claude')
-  check('a conflicting caller read binds here too', declared(caller).includes('read'), true)
-  check('the official read is not duplicated', declared(caller).filter(name => name === 'read').length, 1)
-  check('the bound declaration keeps the caller schema', caller.tools.find(tool => tool.name === 'read').description, 'the read tool')
+  check('a conflicting caller read takes a handle', declared(caller).includes(wireNameOf('read')), true)
+  check('the official read is not replaced', declared(caller).filter(name => name === 'read').length, 1)
+  check('the official read keeps the captured schema', caller.tools.find(tool => tool.name === 'read').input_schema.required, ['path'])
+  check('the handle keeps the caller schema', caller.tools.find(tool => tool.name === wireNameOf('read')).input_schema.properties.command, { type: 'string' })
 }
 
 console.log('\n=== 8. the Responses (flat) shape carries a flat declaration ===')
@@ -264,8 +320,10 @@ console.log('\n=== 8. the Responses (flat) shape carries a flat declaration ==='
 
   const caller = { tools: [flatTool('shell')] }
   applyFingerprint(caller, true)
-  check('a conflicting caller shell binds here too', declared(caller).filter(name => name === 'shell').length, 1)
-  check('the second spelling is the caller schema, not the capture', caller.tools.find(tool => tool.name === 'shell').description, 'the shell tool')
+  check('a conflicting caller shell takes a handle', declared(caller).includes(wireNameOf('shell')), true)
+  check('the official shell is not replaced', declared(caller).filter(name => name === 'shell').length, 1)
+  check('the official shell keeps the captured schema', caller.tools.find(tool => tool.name === 'shell').parameters.required, ['command'])
+  check('the handle keeps the caller schema', caller.tools.find(tool => tool.name === wireNameOf('shell')).parameters.properties.x, { type: 'string' })
 }
 
 console.log('\n=== 9. the injected definitions are byte-for-byte the official ones ===')
@@ -280,14 +338,19 @@ console.log('\n=== 9. the injected definitions are byte-for-byte the official on
   const read = body.tools.find(tool => tool.function.name === 'read').function
   const shell = body.tools.find(tool => tool.function.name === 'shell').function
   check('read equals the captured definition', JSON.stringify({ description: read.description, parameters: read.parameters }), JSON.stringify(captured.read))
-  check('shell equals the captured definition (unix host)', shell.description === captured.shell.description, process.platform !== 'win32')
+  // `shell` carries a platform template upstream; the lane renders it the way a
+  // client on this machine would, so compare against the rendered form.
+  const renderedShell = v2ShellDescription(captured.shell.description)
+  check('shell equals the rendered captured definition', shell.description, renderedShell)
   check('shell schema equals the captured one', JSON.stringify(shell.parameters), JSON.stringify(captured.shell.parameters))
-  const win32Shell = captured.shell.description.replace('on Linux using bash', 'on Windows using powershell')
   check('every official tool equals its capture', V2_OFFICIAL_TOOL_ORDER.every(name => {
     const sent = body.tools.find(tool => tool.function.name === name).function
-    const wantDescription = name === 'shell' && process.platform === 'win32' ? win32Shell : captured[name].description
+    const wantDescription = name === 'shell' ? renderedShell : captured[name].description
     return sent.description === wantDescription && JSON.stringify(sent.parameters) === JSON.stringify(captured[name].parameters)
   }), true)
+  // The template must not survive rendering — a literal `${OS}` on the wire is a
+  // body no client ever sends.
+  check('no template placeholder reaches the wire', /\$\{/.test(shell.description), false)
   check('the gate names are read + shell', [...FINGERPRINT_TOOLS], ['read', 'shell'])
   check('the official order is the captured order', declared(body).slice(-V2_OFFICIAL_TOOL_ORDER.length), V2_OFFICIAL_TOOL_ORDER)
 }
@@ -328,18 +391,25 @@ console.log('\n=== 10b. title requests ship unshaped (v1.4.7) ===')
   }))
   check('…and renames nothing', marker.size, 0)
 
+  // The marker is the first line of the upstream base prompt, taken from the
+  // pinned tag rather than written by hand.
+  const promptMarker = 'You are an AI agent running in OpenCode, a coding agent harness.'
   const chat = { messages: [{ role: 'user', content: 'Generate a title for this conversation: hello' }], tools: [chatTool('read')] }
   applyFingerprint(chat, false)
-  check('a title-shaped body with tools is still shaped', noteOf(chat).includes("You are assisting with a user's software project through OFM."), true)
+  check('a title-shaped body with tools is still shaped', noteOf(chat).includes(promptMarker), true)
 
   const plain = { messages: [{ role: 'user', content: 'hello' }] }
   applyFingerprint(plain, false)
-  check('a plain toolless turn is still shaped', noteOf(plain).includes("You are assisting with a user's software project through OFM."), true)
+  check('a plain toolless turn is still shaped', noteOf(plain).includes(promptMarker), true)
 }
 
-console.log('\n=== 11. the port names the release it mirrors ===')
+console.log('\n=== 11. the wire names the client release it follows ===')
 {
-  check('the ported reference version is pinned', /^\d+\.\d+\.\d+$/.test(O2A_PORTED_VERSION), true)
+  // The gate matches this whole string, so it is the one version fact that has to
+  // be right. Asserting the composed UA rather than a bare semver catches a
+  // version bump that forgets one of the other three segments.
+  check('the User-Agent is the released client shape', /^opencode\/[a-z]+\/2\.\d+\.\d+\/[a-z]+$/.test(CLIENT_UA), true)
+  check('the reported client version is the one the assets came from', CLIENT_UA.includes('/2.2.3/'), true)
 }
 
 console.log(failures === 0 ? '\nall fingerprint checks passed' : `\n${failures} fingerprint check(s) failed`)
