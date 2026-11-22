@@ -140,12 +140,31 @@ try {{
     )
 }
 
+#[cfg(any(windows, test))]
+const HANDOFF_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg(any(windows, test))]
+const HANDOFF_ACK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(30);
+
+#[cfg(any(windows, test))]
+fn ack_is_ready(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    text.trim().trim_start_matches('\u{feff}').trim() == "ready"
+}
+
+#[cfg(any(windows, test))]
+fn ack_timed_out(elapsed: std::time::Duration, timeout: std::time::Duration) -> bool {
+    elapsed >= timeout
+}
+
 #[cfg(windows)]
 pub fn handoff(update: VerifiedUpdate) -> Result<(), String> {
     use std::{
         os::windows::process::CommandExt,
         process::{Command, Stdio},
-        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        time::{Instant, SystemTime, UNIX_EPOCH},
     };
     let executable = std::env::current_exe().map_err(|_| "无法定位当前程序")?;
     let nonce = SystemTime::now()
@@ -172,23 +191,22 @@ pub fn handoff(update: VerifiedUpdate) -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| "无法启动安装交接进程")?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let started = Instant::now();
     let ready = loop {
-        if fs::read_to_string(&ack)
-            .map(|v| v.trim_start_matches('\u{feff}').trim() == "ready")
-            .unwrap_or(false)
-        {
+        if fs::read(&ack).map(|v| ack_is_ready(&v)).unwrap_or(false) {
             break true;
         }
         if helper
             .try_wait()
             .map_err(|_| "无法确认安装交接进程")?
             .is_some()
-            || Instant::now() >= deadline
         {
             break false;
         }
-        std::thread::sleep(Duration::from_millis(30));
+        if ack_timed_out(started.elapsed(), HANDOFF_ACK_TIMEOUT) {
+            break false;
+        }
+        std::thread::sleep(HANDOFF_ACK_POLL_INTERVAL);
     };
     let _ = fs::remove_file(&ack);
     if !ready {
@@ -207,6 +225,8 @@ pub fn handoff(_: VerifiedUpdate) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
     #[test]
     fn verifies_fixed_cache_and_refuses_tamper_or_downgrade() {
         let dir = std::env::temp_dir().join(format!(
@@ -260,5 +280,34 @@ mod tests {
             quote_path(Path::new(r"\\?\C:\缓存\setup.exe")),
             "'C:\\缓存\\setup.exe'"
         );
+    }
+
+    #[test]
+    fn recognizes_only_ready_acknowledgements() {
+        assert!(ack_is_ready(b"ready"));
+        assert!(ack_is_ready(b"ready\r\n"));
+        assert!(ack_is_ready("\u{feff}ready".as_bytes()));
+        assert!(ack_is_ready("\u{feff}  ready \r\n".as_bytes()));
+        assert!(ack_is_ready(" \u{feff}ready\n".as_bytes()));
+        assert!(!ack_is_ready(b""));
+        assert!(!ack_is_ready(b"\r\n"));
+        assert!(!ack_is_ready(b"not-ready"));
+        assert!(!ack_is_ready(b"ready!"));
+        assert!(!ack_is_ready(&[0xff, 0xfe, b'r']));
+    }
+
+    #[test]
+    fn ack_timeout_keeps_the_boundary_explicit() {
+        assert_eq!(HANDOFF_ACK_TIMEOUT, Duration::from_secs(30));
+        assert!(HANDOFF_ACK_TIMEOUT < Duration::from_secs(60));
+        assert!(!ack_timed_out(
+            HANDOFF_ACK_TIMEOUT - Duration::from_millis(1),
+            HANDOFF_ACK_TIMEOUT
+        ));
+        assert!(ack_timed_out(HANDOFF_ACK_TIMEOUT, HANDOFF_ACK_TIMEOUT));
+        assert!(ack_timed_out(
+            HANDOFF_ACK_TIMEOUT + Duration::from_millis(1),
+            HANDOFF_ACK_TIMEOUT
+        ));
     }
 }
