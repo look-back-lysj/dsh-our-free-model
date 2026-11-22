@@ -1,7 +1,7 @@
 {
   "version": "2.9.0",
   "base": "../",
-  "publishedAt": "2026-11-22T09:19:27.118Z",
+  "publishedAt": "2026-11-22T11:30:33.696Z",
   "notes": "",
   "files": [
     {
@@ -31,8 +31,8 @@
     },
     {
       "path": "index.js",
-      "size": 146524,
-      "sha256": "64bda1fa219cefdccbaea85b4737173a195b1e761aa3318950e590935578a5ac"
+      "size": 149124,
+      "sha256": "991a660d0e108bd6c1c3b6c2a1e21aa3147c63f549c33770dae384a5d665ff9d"
     },
     {
       "path": "LICENSE",
@@ -51,13 +51,13 @@
     },
     {
       "path": "package.json",
-      "size": 5263,
-      "sha256": "dc246b3732d72779979a2ee79d986e566a06054c585ab8fc087ff897a164c8ba"
+      "size": 5162,
+      "sha256": "4f4bdbb92dcf34a1ed2d0c6bd3a9d7016c548b3089ebbcca48422a9a7ca592ca"
     },
     {
       "path": "src/adapter.js",
-      "size": 54991,
-      "sha256": "5ae65572819ef1b34c57978d7fd548c321cf21ccb29527e04595923495599343"
+      "size": 55471,
+      "sha256": "6dc87f3d98bee8a6a9e8115d06e6c3eb1236c0efc607bc85d3f58f5c258a5f01"
     },
     {
       "path": "src/aggregate.js",
@@ -66,8 +66,8 @@
     },
     {
       "path": "src/anthropic.js",
-      "size": 37282,
-      "sha256": "f45027599e194a10cf56532fff9e13ae756fc03db8fbb58ecc69d5d467bdadb8"
+      "size": 37279,
+      "sha256": "a13a59f58813d2d158fca4771943a54cef390b15eadd5c41daf20904a686797b"
     },
     {
       "path": "src/bun-fetch.js",
@@ -96,13 +96,8 @@
     },
     {
       "path": "src/core.js",
-      "size": 36553,
-      "sha256": "f4bedf41a04678f3d911ae79da5745a11b8483e3519e12c4d93b61de35c9cf11"
-    },
-    {
-      "path": "src/deferred-response.js",
-      "size": 1639,
-      "sha256": "6a2cd40fc63a1a18e36be7ce32ca86aeae117eb2e06185879a2b38d451664fae"
+      "size": 36550,
+      "sha256": "a741075480204f6d2e8dc27566fe33668c175793dd607bd3e83f6677cb7ccae9"
     },
     {
       "path": "src/disclaimer.js",
@@ -137,37 +132,57 @@
     {
       "path": "src/engine-parts/win32-x64.000.part",
       "size": 4194304,
-      "sha256": "271153d125146ba96c31094e624fc82ee336bc3e71f1d56d5863d65b502139ff"
+      "sha256": "c95a6abca6dc4e87ed54a8b4888d059d2c81c5afcdb9be8098424b44184d67b0"
     },
     {
       "path": "src/engine-parts/win32-x64.001.part",
       "size": 4194304,
-      "sha256": "9b1e05b21030112cd03751c4d629f58aeda6a069f6eb0abc893afa0fa29d9357"
+      "sha256": "f6ca66746637023f3a47fdf580f9ab9748c6f78e2092d4362beb42a6482a0a53"
     },
     {
       "path": "src/engine-parts/win32-x64.002.part",
       "size": 4194304,
-      "sha256": "a68960865289e3c8d71bc95c7bb7160ff80495aa67e4f96c070af0a9014f8c5a"
+      "sha256": "adca6d61a8161b9e975cf1c7bb71244fe973869cdf1e2a429d4dec10fdccc9e4"
     },
     {
       "path": "src/engine-parts/win32-x64.003.part",
       "size": 4194304,
-      "sha256": "58875c04d968c05f11c05716304f700fbd8441dac4a4ac4cb7be84a7ad2a0334"
+      "sha256": "8204ffd739e4d00de38297aa6628e16c26a8264c52b2258b93938cf23a338f14"
     },
     {
       "path": "src/engine-parts/win32-x64.004.part",
       "size": 4194304,
-      "sha256": "116f4f9cf15d75ca00dca072eb8610de0f88f18cd2d4c4f08c1eb768cfb55da2"
+      "sha256": "ed6d358cfdbdeb971209451fd6682e537a044e27a880cdc3505dc72cef70c370"
     },
     {
       "path": "src/engine-parts/win32-x64.005.part",
       "size": 4194304,
-      "sha256": "364374b4a62dac550fa25b498b0b064a7bae74a7496867ad7c1dda6e9cfeff8f"
+      "sha256": "a59b508dca39dc5a41b6ecebdb9ad9fae4bfb7c22e5d7e6bc8335f3708f12697"
     },
     {
       "path": "src/engine-parts/win32-x64.006.part",
-      "size": 3512186,
-      "sha256": "f95bcd7723547caa0827e8efc4f5a4586154011f54c1a5eb85c393b905de2328"
+      "size": 4194304,
+      "sha256": "43046c596a5ab1d3049106de3dd6e6079acd70cbf08d9add578dccd12e801b67"
+    },
+    {
+      "path": "src/engine-parts/win32-x64.007.part",
+      "size": 4194304,
+      "sha256": "fa4465f8f6a0075f958e1487ad59fbd5e2b7c86a3f8d0405946ee5e3c51cafab"
+    },
+    {
+      "path": "src/engine-parts/win32-x64.008.part",
+      "size": 4194304,
+      "sha256": "161b4f48b5d324c9681833bedef86b97c7a6a1fb63318e51f091b2de4245f3ac"
+    },
+    {
+      "path": "src/engine-parts/win32-x64.009.part",
+      "size": 4194304,
+      "sha256": "b4d3e3847b008cffc95fabb38696155446b9c00a7568dd14adf8810c22840195"
+    },
+    {
+      "path": "src/engine-parts/win32-x64.010.part",
+      "size": 2215402,
+      "sha256": "ba60c7b7fc0d9a83c0ee6b2d3c3b83c9f7a09d0193fcc01746538f05491fa126"
     },
     {
       "path": "src/engine-payload.js",
@@ -180,34 +195,24 @@
       "sha256": "d5f2915c5039b8eb8f7c293d9860e21d375fb4b1ca42241e9a048cf7df1e43e8"
     },
     {
-      "path": "src/failure.js",
-      "size": 2222,
-      "sha256": "859b5b8ccc7ab11e68de6befdbe90db34c978678214118be39e47a41f002c2ea"
-    },
-    {
       "path": "src/feed.js",
       "size": 27619,
       "sha256": "b5a9363c8497f883b48660e1bbddd2647cbd6e8135fc0c84f603db3aece9a515"
     },
     {
       "path": "src/forward.js",
-      "size": 72486,
-      "sha256": "51b93c7c3f2037b6a2622e5245ac9de8d7419635d2be0dee9bc38a0046e71d80"
+      "size": 74062,
+      "sha256": "de98dfb534b34e478b78160241c2d35cbabf9a8218feacd05f30ba970a856db9"
     },
     {
       "path": "src/gemini.js",
-      "size": 26223,
-      "sha256": "ad81de7ce26ad0ca07ed5b7507a63df6c48e08dcd512c5a9c9bcd04f33c5ddcb"
+      "size": 26220,
+      "sha256": "725c862c74cc2d95464aaf61c4a00ea219e9c67b1c653e6d05ab6995b45a49a2"
     },
     {
       "path": "src/http.js",
-      "size": 32359,
-      "sha256": "d6bec20365b2abb2ee01a8948809ef39bd7db9a8744d643ddf5331d8d0615174"
-    },
-    {
-      "path": "src/image-pricing.js",
-      "size": 539,
-      "sha256": "ee92a354506df0f0ce182efaf6bbc4780fb7c3fb503a5cbb2836974b34d47066"
+      "size": 34582,
+      "sha256": "25ad54af6b20818423a1bf73b61cc06604fb42b9cc3b0c4370cfc1e7bc8c436f"
     },
     {
       "path": "src/kilo.js",
@@ -226,8 +231,8 @@
     },
     {
       "path": "src/magpie-engine.js",
-      "size": 59765,
-      "sha256": "469b1df4f8ac906be938b24875b82abc7286a5ee31c831f2837f1108d27e2261"
+      "size": 52214,
+      "sha256": "aacde17a01a907ede6a6682d6db40e03af58ed3c1f8ff2c84f1086b7913d1d3f"
     },
     {
       "path": "src/magpie-models.js",
@@ -283,11 +288,6 @@
       "path": "src/providers/registry.json",
       "size": 137887,
       "sha256": "234102ceda21c1b673ca41c60749a65858da65495c816a06ecfc7564eed90ce3"
-    },
-    {
-      "path": "src/push.js",
-      "size": 3210,
-      "sha256": "0e99ad2094a005846a98da69f51b0546e96dbd12b6e2448747ebaf61a987f2dd"
     },
     {
       "path": "src/recovery.js",
@@ -391,8 +391,8 @@
     },
     {
       "path": "vendor/magpie/engine.json",
-      "size": 9435,
-      "sha256": "526a1a719be073ea8be97f9c03dbf6b8ddd0f53bc9fead91a079a00ea5af4412"
+      "size": 20254,
+      "sha256": "13b925d5c72090cc3b9a4f8f5fe037ab631c08c1d8e57ea6153c4bb0442f736e"
     },
     {
       "path": "vendor/magpie/LICENSE",
@@ -401,9 +401,9 @@
     },
     {
       "path": "vendor/magpie/NOTICE.md",
-      "size": 135147,
-      "sha256": "0d4659c87afb6fa01dd291ae32e1d759cd248126eb95e392753ce3a4c48c3560"
+      "size": 847991,
+      "sha256": "975b70c8d2fc53ed5928446f4b98a81cb369203894017201975b06ed554b0eca"
     }
   ],
-  "signature": "zngK7rgM8J4aHMgwjzQgEzmiQ9VLHXH2VvJFBJzYNkn4WdXZOUKDxKbY+6BIkjEHfauBnZoEilihbUm+pTD4Bw=="
+  "signature": "L8TJRA9PckAP6ei+5KdcKFjf12YvzFkHvJ1qd/1jeeXj2WD7Ru3ar3BLuesNvkXoCZ/Ac3xy89XY+TQBNTsLAw=="
 }
