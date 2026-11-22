@@ -6,12 +6,15 @@ import { generateKey } from '../../src/forward.js'
 import { structuralRejection } from '../../src/trust.js'
 import { openLoginTerminal } from './login-terminal.mjs'
 import { publicModelVisibility, validateModelVisibility, isModelHidden } from '../../src/store.js'
+import { freeLaneExitSnapshot, clearLaneExits, laneProxyEcho } from '../../src/egress.js'
 import { createWorkbench } from './workbench.mjs'
 import { createProviderManagement } from './providers.mjs'
 import { createWorkbenchLibrary } from './library.mjs'
 import { createRoutingManagement } from './routing.mjs'
 import { createDesktopUpdater } from './desktop-update.mjs'
+import { createFeedback } from './feedback.mjs'
 import { DISCLAIMER, DISCLAIMER_VERSION, disclaimerAcknowledged } from '../../src/disclaimer.js'
+import { pageBridgeSource } from '../../src/plugins.js'
 
 const PREFIX = '/api/management'
 const BOOTSTRAP_MS = 10 * 60_000
@@ -57,11 +60,12 @@ async function readBody(req, limit = MAX_BODY_BYTES) {
 
 function validateSettings(patch) {
   const visibility = validateModelVisibility(patch)
-  const booleans = new Set(['enabled', 'exposeRegionModels', 'streamRecovery', 'standaloneProbe', 'standaloneLanEnabled'])
+  const booleans = new Set(['enabled', 'exposeRegionModels', 'streamRecovery', 'standaloneProbe', 'standaloneLanEnabled', 'developerPlugins', 'autoUpdateExtensions'])
   const numbers = { probeIntervalMinutes: [1, 1440], defaultMaxTokens: [512, 131072], standaloneLanPort: [0, 65535] }
   const result = {}
   for (const [key, value] of Object.entries(patch)) {
     if (Object.hasOwn(visibility, key)) { result[key] = visibility[key]; continue }
+    if (key === 'freeLane') { result[key] = validateFreeLane(value); continue }
     if (booleans.has(key)) {
       if (typeof value !== 'boolean') throw fail(400, `${key} 必须是布尔值`)
     } else if (Object.hasOwn(numbers, key)) {
@@ -71,6 +75,45 @@ function validateSettings(patch) {
     result[key] = value
   }
   return result
+}
+
+/**
+ * The free lane's exit pool.
+ *
+ * `proxies` is a list of addresses, each optionally marked `#pool` (a rotating
+ * endpoint, never cooled). `maxTries` bounds how many exits one request may
+ * walk. Every address is validated here so a typo fails the write rather than
+ * every turn — the same contract the desktop settings route holds.
+ */
+function validateFreeLane(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw fail(400, 'freeLane 必须是对象')
+  const out = {}
+  if (value.proxies !== undefined) {
+    if (!Array.isArray(value.proxies)) throw fail(400, 'freeLane.proxies 必须是数组')
+    const proxies = []
+    for (const raw of value.proxies) {
+      if (typeof raw !== 'string') throw fail(400, 'freeLane.proxies 的每一项必须是字符串')
+      const text = raw.trim()
+      if (text === '') continue
+      let candidate = text
+      if (/^pool\+/i.test(candidate)) candidate = candidate.slice(5).trim()
+      if (/#pool$/i.test(candidate)) candidate = candidate.replace(/#pool$/i, '').trim()
+      let parsed
+      try { parsed = new URL(candidate) } catch { throw fail(400, `出口地址无法解析：${text}`) }
+      if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(parsed.protocol)) {
+        throw fail(400, `出口地址的协议不受支持：${parsed.protocol}（可用 http / https / socks5 / socks5h）`)
+      }
+      proxies.push(text)
+    }
+    out.proxies = proxies
+  }
+  if (value.maxTries !== undefined) {
+    if (!Number.isInteger(value.maxTries) || value.maxTries < 1 || value.maxTries > 8) {
+      throw fail(400, 'freeLane.maxTries 必须是 1 到 8 的整数')
+    }
+    out.maxTries = value.maxTries
+  }
+  return out
 }
 
 export function managementSettings(value) {
@@ -84,11 +127,38 @@ export function managementSettings(value) {
     standaloneLanPort: value.standaloneLanPort ?? 0,
     probeIntervalMinutes: value.probeIntervalMinutes ?? 15,
     defaultMaxTokens: value.defaultMaxTokens ?? 32768,
+    developerPlugins: value.developerPlugins === true,
+    autoUpdateExtensions: value.autoUpdateExtensions === true,
+    // The free lane's own exit pool. Addresses are credentials, so only the
+    // masked list and the pool size go out here — never the URLs themselves.
+    freeLane: {
+      proxies: Array.isArray(value.freeLane?.proxies) ? value.freeLane.proxies.map(entry => outletMask(entry)) : [],
+      maxTries: value.freeLane?.maxTries ?? 3,
+    },
+  }
+}
+
+/**
+ * Protocol + host + port only; userinfo, path and query are dropped.
+ *
+ * The `#pool` marker is not a credential and is part of the address's meaning —
+ * a rotating endpoint is never cooled, so dropping the marker would show a pool
+ * entry as an ordinary static one and invite the reader to expect cooldown
+ * behaviour that does not apply to it.
+ */
+function outletMask(raw) {
+  const text = String(raw)
+  try {
+    const url = new URL(text.replace(/^pool\+/i, '').replace(/#pool$/i, '').trim())
+    const pool = /^pool\+/i.test(text.trim()) || /#pool$/i.test(text.trim())
+    return `${url.protocol}//${url.host}${pool ? '#pool' : ''}`
+  } catch {
+    return '…'
   }
 }
 
 /** 管理读写要求鉴权；登录恢复仅允许同源页面触发固定本机动作。 */
-export function createManagement({ stores, runtime, channels, eac, subscriptions, workbenchOptions, magpieEngine, magpieModels, onEngineStarted, onSubscriptionsChanged, info, onSettingsChanged, loginTerminal = openLoginTerminal, desktopPlatform = process.platform, desktopArch = process.arch }) {
+export function createManagement({ stores, runtime, channels, eac, subscriptions, workbenchOptions, magpieEngine, magpieModels, extensions, onEngineStarted, onSubscriptionsChanged, info, onSettingsChanged, loginTerminal = openLoginTerminal, desktopPlatform = process.platform, desktopArch = process.arch }) {
   // `desktopPlatform`/`desktopArch` are threaded from the caller instead of read
   // from `process` so the Windows-only update flow stays exercisable on a test
   // runner that is neither (`desktop-update.mjs` already takes them this way).
@@ -131,15 +201,38 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
       privilegedSessions.delete(id)
     }
   }
+  /**
+   * Sliding renewal: an active console session never expires mid-use.
+   *
+   * A fixed 8h deadline killed the page while the user was looking at it
+   * (issue #557) — the cookie outlived the server-side record, so the next
+   * request 401'd with no way to recover but a manual re-login. Touching the
+   * record on each authenticated request keeps an idle console expiring on
+   * schedule while a busy one stays alive. The cookie's `Max-Age` is not
+   * rewritten here, so a closed tab still drops the session within 8h.
+   */
+  const touchSession = id => {
+    if (typeof id !== 'string' || id === '') return
+    const until = sessions.get(id)
+    if (until === undefined) return
+    const renewed = Date.now() + SESSION_MS
+    // Only write when the extension is meaningful, so a busy console does not
+    // rewrite the map on every request.
+    if (renewed - until > 60_000) sessions.set(id, renewed)
+  }
   const authenticated = req => {
     const bearer = /^Bearer (.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1]
     if (matches(bearer, stores.settings.get().forwardKey)) return true
     pruneSessions()
-    return sessions.has(cookie(req))
+    const id = cookie(req)
+    touchSession(id)
+    return sessions.has(id)
   }
   const sessionAuthenticated = req => {
     pruneSessions()
-    return sessions.has(cookie(req)) && privilegedSessions.has(cookie(req))
+    const id = cookie(req)
+    touchSession(id)
+    return sessions.has(id) && privilegedSessions.has(id)
   }
   const persist = patch => {
     const previous = stores.settings.get()
@@ -161,6 +254,7 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
   const providerManagement = runtime ? createProviderManagement({ stores, runtime, persist }) : undefined
   const routingManagement = runtime ? createRoutingManagement({ stores, runtime, persist }) : undefined
   const library = workbench ? createWorkbenchLibrary({ dataDir: info().dataDir, workbench }) : undefined
+  const feedback = createFeedback({ settings: () => stores.settings.get(), persist })
   workbench?.setLibrary(library)
   const summary = () => {
     const state = runtime.state()
@@ -173,6 +267,17 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
       settings: managementSettings(stores.settings.get()),
       catalogSyncedAt: stores.settings.get().catalogSyncedAt ?? 0,
       probedAt: available.at ?? 0,
+      lane: available.lane ?? null,
+      // The free lane's exits with their live cooldown, so the page can show
+      // which route is spent and for how long.
+      laneExits: freeLaneExitSnapshot(),
+      extensions: extensions !== undefined ? { installed: extensions.listInstalled() } : null,
+      plugins: extensions !== undefined ? {
+        installedCount: extensions.listInstalled().filter(record => record.builtin !== true).length,
+        builtinCount: extensions.listInstalled().filter(record => record.builtin === true).length,
+        pages: extensions.pages(),
+        developerPlugins: stores.settings.get().developerPlugins === true,
+      } : null,
       catalog: state.catalog.map(entry => {
         const measured = modelAvailability(entry.id, available, Boolean(entry.channel))
         return ({
@@ -187,8 +292,64 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
     }
   }
 
+  const PLUGIN_ASSET_RE = /^\/api\/management\/plugins\/assets\/([a-f0-9]{32})\/(.+)$/
+  const pluginAssetPath = pathname => PLUGIN_ASSET_RE.test(pathname)
+
+  /** The one host script a page plugin may load. It is static, has no secrets,
+   *  and only opens the postMessage channel back to this console. */
+  function injectPluginBridge(html, source) {
+    const tag = `<script src="${source}"></script>`
+    const text = String(html)
+    if (/<\/head\s*>/i.test(text)) return text.replace(/<\/head\s*>/i, `${tag}</head>`)
+    return `${tag}${text}`
+  }
+
+  /**
+   * Serve one page asset. The URL token is the capability: the iframe has an
+   * opaque origin and no session, so authorization is "this file was declared
+   * by the plugin this boot minted the token for". Everything else is 404.
+   */
+  function servePluginAsset(req, res, pathname) {
+    const match = PLUGIN_ASSET_RE.exec(pathname)
+    if (match === null) { res.writeHead(404); res.end(); return }
+    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return }
+    const token = match[1]
+    let relative
+    try { relative = decodeURIComponent(match[2]) } catch { res.writeHead(400); res.end(); return }
+    if (relative === '' || relative.includes('..') || relative.includes('\\') || relative.includes('\0')) {
+      res.writeHead(404); res.end(); return
+    }
+    const origin = (() => {
+      try { return new URL(info().baseUrl).origin } catch { return `http://${req.headers.host}` }
+    })()
+    const headers = {
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+      'cross-origin-resource-policy': 'cross-origin',
+      'access-control-allow-origin': '*',
+      'content-security-policy': `default-src 'none'; script-src ${origin}; style-src 'unsafe-inline' ${origin}; img-src data: blob: ${origin}; font-src ${origin}; connect-src 'none'; frame-ancestors ${origin}; base-uri 'none'; form-action 'none'`,
+    }
+    if (relative === '__bridge.js') {
+      const body = Buffer.from(pageBridgeSource())
+      res.writeHead(200, { ...headers, 'content-type': 'text/javascript; charset=utf-8', 'content-length': body.length })
+      res.end(req.method === 'HEAD' ? undefined : body)
+      return
+    }
+    const asset = extensions?.pageAsset(token, relative)
+    if (asset === undefined || asset === null) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); res.end('not found'); return }
+    let body = asset.bytes
+    if (asset.type.startsWith('text/html')) {
+      body = Buffer.from(injectPluginBridge(body.toString('utf8'), `/api/management/plugins/assets/${token}/__bridge.js`))
+    }
+    res.writeHead(200, { ...headers, 'content-type': asset.type, 'content-length': body.length })
+    res.end(req.method === 'HEAD' ? undefined : body)
+  }
+
   async function route(req, res, pathname) {
+
     const method = req.method ?? 'GET'
+    const reply = (statusCode, payload, headers) => json(res, statusCode, payload, headers)
     if (method === 'POST' && pathname === `${PREFIX}/login/terminal`) {
       // 此入口发生在登录前，必须有浏览器的同源 Origin，拒绝跨站和无来源调用。
       if (req.headers.origin !== new URL(`http://${req.headers.host}`).origin ||
@@ -215,6 +376,11 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
       if (!validBootstrap && !validManagementKey && !matches(body.key, stores.settings.get().forwardKey)) throw fail(401, '登录链接已失效或登录令牌不正确')
       pruneSessions()
       if (sessions.size >= 64) throw fail(429, '管理会话过多，请稍后重试')
+      // The bootstrap link is deliberately single-use (a test pins that: a
+      // replayable one-time link is a replayable credential). What #557 asked
+      // for is the *session* surviving normal use, which `touchSession` now
+      // handles — a live console is renewed on every authenticated request
+      // instead of dying at a fixed 8h mark.
       if (validBootstrap) bootstrap = null
       const id = crypto.randomBytes(32).toString('base64url')
       sessions.set(id, Date.now() + SESSION_MS)
@@ -233,6 +399,9 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
       || pathname === `${PREFIX}/subscriptions` || pathname.startsWith(`${PREFIX}/subscriptions/`)
       || pathname === `${PREFIX}/routing` || pathname.startsWith(`${PREFIX}/routing/`)
       || pathname === `${PREFIX}/engine` || pathname.startsWith(`${PREFIX}/engine/`)
+      || pathname === `${PREFIX}/extensions` || pathname.startsWith(`${PREFIX}/extensions/`)
+      || pathname === `${PREFIX}/plugins` || pathname.startsWith(`${PREFIX}/plugins/`)
+      || pathname === `${PREFIX}/feedback` || pathname.startsWith(`${PREFIX}/feedback/`)
     // A sandboxed plugin page inside the workspace carries a per-run HMAC
     // capability in its own path; it has an opaque origin and cannot send this
     // console's session. The engine validates the capability and serves only
@@ -240,10 +409,144 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
     // be decided before the session check for the same reason.
     const enginePluginAsset = ['GET', 'HEAD'].includes(req.method)
       && /^\/api\/management\/engine\/ui\/_magpie\/plugin\/[a-f0-9]{32}\/[^?]+$/.test(pathname)
-    if (!authenticated(req) && !enginePluginAsset) throw fail(401, '请先登录管理页面')
-    if (privilegedManagementRoute && !sessionAuthenticated(req) && !enginePluginAsset) {
+    const pluginPageAsset = ['GET', 'HEAD'].includes(req.method) && pluginAssetPath(pathname)
+    if (!authenticated(req) && !enginePluginAsset && !pluginPageAsset) throw fail(401, '请先登录管理页面')
+    if (privilegedManagementRoute && !sessionAuthenticated(req) && !enginePluginAsset && !pluginPageAsset) {
       throw fail(403, '此管理操作需要已登录的本地管理会话')
     }
+    // ── the plugin center (behind the same session fence) ────────────────────
+    // `/plugins` is the current surface; `/extensions` stays as an alias so an
+    // older console and the DSH-side marketplace keep working unchanged.
+    const pluginBase = pathname === `${PREFIX}/plugins` || pathname.startsWith(`${PREFIX}/plugins/`)
+      ? `${PREFIX}/plugins`
+      : pathname === `${PREFIX}/extensions` || pathname.startsWith(`${PREFIX}/extensions/`)
+        ? `${PREFIX}/extensions`
+        : null
+    if (pluginBase !== null) {
+      // A composition that mounted no plugin runtime answers "unavailable",
+      // never a TypeError.
+      if (extensions === undefined) return reply(503, { error: 'the plugin platform is unavailable' })
+      const suffix = pathname.slice(pluginBase.length)
+      const readJsonBody = () => readBody(req)
+      if (method === 'GET' && suffix === '') {
+        // A first paint waits briefly for the boot warm-up and hears why a read
+        // failed, rather than being told the index is unreadable when it is
+        // simply still downloading.
+        const status = await extensions.registryStatusSoon()
+        return reply(200, {
+          installed: extensions.listInstalled(),
+          registry: status.registry,
+          registryError: status.error,
+          pages: extensions.pages(),
+          audit: extensions.auditTail(100),
+          updates: extensions.updatesAvailable(),
+          registryMeta: extensions.registryMeta(),
+          settings: {
+            developerPlugins: stores.settings.get().developerPlugins === true,
+            autoUpdateExtensions: stores.settings.get().autoUpdateExtensions === true,
+          },
+        })
+      }
+      if (method === 'GET' && suffix === '/pages') return reply(200, { pages: extensions.pages() })
+      if (method === 'GET' && suffix === '/audit') return reply(200, { entries: extensions.auditTail(100) })
+      if (method === 'GET' && suffix === '/cover') {
+        const id = new URL(req.url ?? '/', 'http://localhost').searchParams.get('id') ?? ''
+        const image = await extensions.coverImage(id)
+        if (image === null) return reply(404, { error: 'cover not found' })
+        res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': image.contentType, 'content-length': image.bytes.length })
+        res.end(image.bytes)
+        return
+      }
+      if (method === 'POST' && suffix === '/registry/refresh') {
+        try {
+          await extensions.refreshRegistry({ force: true })
+          return reply(200, { ok: true, installed: extensions.listInstalled(), registry: extensions.registryView() })
+        } catch (error) {
+          return reply(502, { error: String(error?.message ?? error), installed: extensions.listInstalled() })
+        }
+      }
+      if (method === 'POST' && suffix === '/install') {
+        try {
+          const body = await readJsonBody()
+          const record = await extensions.install(String(body?.id ?? ''), { version: typeof body?.version === 'string' ? body.version : undefined })
+          return reply(200, { ok: true, record, installed: extensions.listInstalled(), pages: extensions.pages() })
+        } catch (error) {
+          return reply(400, { error: String(error?.message ?? error) })
+        }
+      }
+      if (method === 'POST' && suffix === '/install-local') {
+        try {
+          if (stores.settings.get().developerPlugins !== true) throw fail(403, '请先在插件中心开启开发者模式')
+          const body = await readJsonBody()
+          const record = await extensions.installLocal({
+            path: String(body?.path ?? ''),
+            acknowledgeUnsigned: body?.acknowledgeUnsigned === true,
+          })
+          return reply(200, { ok: true, record, installed: extensions.listInstalled(), pages: extensions.pages() })
+        } catch (error) {
+          return reply(error.statusCode ?? 400, { error: String(error?.message ?? error) })
+        }
+      }
+      if (method === 'POST' && suffix === '/uninstall') {
+        try {
+          const body = await readJsonBody()
+          await extensions.uninstall(String(body?.id ?? ''))
+          return reply(200, { ok: true, installed: extensions.listInstalled(), pages: extensions.pages() })
+        } catch (error) {
+          return reply(400, { error: String(error?.message ?? error) })
+        }
+      }
+      if (method === 'POST' && suffix === '/toggle') {
+        try {
+          const body = await readJsonBody()
+          const record = await extensions.setEnabled(String(body?.id ?? ''), body?.enabled === true)
+          return reply(200, { ok: true, record, installed: extensions.listInstalled(), pages: extensions.pages() })
+        } catch (error) {
+          return reply(400, { error: String(error?.message ?? error) })
+        }
+      }
+      if (method === 'POST' && suffix === '/config') {
+        try {
+          const body = await readJsonBody()
+          const record = await extensions.saveConfig(String(body?.id ?? ''), body?.values ?? {})
+          // `installed` rides along so a saved config field is reflected by the
+          // card that rendered it.
+          return reply(200, { ok: true, record, installed: extensions.listInstalled() })
+        } catch (error) {
+          return reply(400, { error: String(error?.message ?? error) })
+        }
+      }
+      if (method === 'POST' && suffix === '/secret') {
+        try {
+          const body = await readJsonBody()
+          const record = await extensions.saveSecret(String(body?.id ?? ''), String(body?.key ?? ''), body?.value)
+          return reply(200, { ok: true, record, installed: extensions.listInstalled() })
+        } catch (error) {
+          return reply(400, { error: String(error?.message ?? error) })
+        }
+      }
+      if (method === 'POST' && suffix === '/self-test') {
+        try {
+          const body = await readJsonBody()
+          return reply(200, await extensions.runSelfTest(String(body?.id ?? '')))
+        } catch (error) {
+          return reply(400, { error: String(error?.message ?? error) })
+        }
+      }
+      if (method === 'POST' && suffix === '/page-rpc') {
+        try {
+          const body = await readBody(req, 96 * 1024)
+          const result = await extensions.pageRpc(
+            String(body?.pluginId ?? ''), String(body?.pageId ?? ''), String(body?.method ?? ''), body?.params ?? {},
+          )
+          return reply(200, { ok: true, result })
+        } catch (error) {
+          return reply(400, { error: String(error?.message ?? error) })
+        }
+      }
+      return reply(404, { error: '插件接口不存在' })
+    }
+
     if (method === 'POST' && pathname === `${PREFIX}/logout`) {
       await readBody(req)
       sessions.delete(cookie(req))
@@ -358,6 +661,16 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
       } else throw fail(404, '订阅操作不存在')
       runtime.syncAggregateCatalog()
       json(res, 200, { accounts: subscriptions.list() })
+    } else if (method === 'GET' && pathname === `${PREFIX}/feedback`) {
+      json(res, 200, feedback.status())
+    } else if (method === 'POST' && pathname.startsWith(`${PREFIX}/feedback/`)) {
+      const action = pathname.slice(`${PREFIX}/feedback/`.length)
+      const body = await readBody(req, 32 * 1024)
+      if (action === 'start') json(res, 200, await feedback.start())
+      else if (action === 'poll') json(res, 200, await feedback.poll(body))
+      else if (action === 'signout') json(res, 200, feedback.signOut())
+      else if (action === 'submit') json(res, 200, await feedback.submit(body))
+      else throw fail(404, '反馈操作不存在')
     } else if (method === 'POST' && pathname === `${PREFIX}/channels/rpc` && channels) {
       // 渠道备份导入包含多账号凭据，仍限制总大小，但不能套设置表单的 16KB。
       const body = await readBody(req, 8 * 1024 * 1024)
@@ -408,6 +721,20 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
       persist(patch)
       await onSettingsChanged()
       json(res, 200, { settings: managementSettings(stores.settings.get()), lan: info().lan })
+    } else if (method === 'POST' && pathname === `${PREFIX}/lane/echo`) {
+      // Test one exit: dial a third-party echo service, never the free gateway,
+      // so a test never spends quota. `proxy` names the exit to test; omitting it
+      // tests whichever exit the lane would pick right now.
+      const body = await readBody(req)
+      try {
+        json(res, 200, { ok: true, ...await laneProxyEcho({ proxy: typeof body?.proxy === 'string' ? body.proxy : undefined }) })
+      } catch (error) {
+        throw fail(502, String(error?.message ?? error).slice(0, 200))
+      }
+    } else if (method === 'POST' && pathname === `${PREFIX}/lane/clear`) {
+      // Lift the cooldown on every exit. The lane-level quota breaker lives in the
+      // plugin's availability store, not here; this route is about exits.
+      json(res, 200, { ok: true, exits: clearLaneExits(), laneExits: freeLaneExitSnapshot() })
     } else if (method === 'GET' && pathname === `${PREFIX}/lan/key`) {
       json(res, 200, { key: stores.settings.get().standaloneLanKey ?? '' })
     } else if (method === 'POST' && pathname === `${PREFIX}/lan/key/rotate`) {
@@ -461,6 +788,7 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
       const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
       const asset = assets.get(pathname)
       const isApi = pathname === PREFIX || pathname.startsWith(`${PREFIX}/`)
+      const pageAsset = ['GET', 'HEAD'].includes(req.method) && pluginAssetPath(pathname)
       if (!asset && !isApi) return false
       // 不接受插件专用 dsh-app Referer；独立管理只允许本页面的 HTTP 来源。
       const referer = req.headers.referer
@@ -469,6 +797,10 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
         typeof value !== 'string' || !value.startsWith('http://')
       ))
       if (closed || !cookieName) json(res, 503, { error: '服务正在停止或启动' })
+      // A page asset is a capability URL: the sandboxed iframe has an opaque
+      // origin and sends no session. It must be decided before both the
+      // same-site source fence and the session check.
+      else if (pageAsset) servePluginAsset(req, res, pathname)
       else if (malformedSource || structuralRejection(req) !== undefined) json(res, 403, { error: '管理接口仅允许本机同源访问' })
       else if (asset) {
         if (req.method !== 'GET' && req.method !== 'HEAD') json(res, 405, { error: '资源仅支持 GET 或 HEAD' })

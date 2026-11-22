@@ -159,6 +159,15 @@ export const SETTINGS_INITIAL = {
   version: 1,
   /** Master switch: when off the routes stay registered but serve nothing. */
   enabled: true,
+  /** Allow installing unsigned local plugin packages from disk. Off by
+   *  default: the signed marketplace is the trust root, and a local package is
+   *  an explicit developer action with its own warning and badge. */
+  developerPlugins: false,
+  /** Install extension updates automatically once the registry tick runs and
+   *  the newer version has soaked past its supply-chain window (see
+   *  AUTO_UPDATE_SOAK_MS in src/extensions.js). Off by default: the update
+   *  badge is the prompt, the button is the decision. */
+  autoUpdateExtensions: false,
   /** Show region-limited models in the picker as soon as they answer. */
   exposeRegionModels: true,
   /** Advertisement only: retain catalog entries and historical model resolution. */
@@ -167,8 +176,29 @@ export const SETTINGS_INITIAL = {
   hideEacModels: false,
   /** Minutes between background catalog refreshes. Automatic availability
    *  probing is disabled by owner policy; only the manual reprobe button sends
-   *  probe requests. */
+   *  probe requests. Since 2.8.1 this cadence also cannot re-fetch the listing
+   *  more often than once a listing window (see src/core/runtime.js). */
   probeIntervalMinutes: 15,
+  /**
+   * The OpenCode lane's own exit pool (issue #708's method).
+   *
+   * The free tier's usage ceiling is counted per egress IP, so moving this
+   * lane's requests through another exit is the one lever that moves the
+   * counter. One address is not enough: a burned IP answers with a multi-hour
+   * `Retry-After`, and the lane needs somewhere to go within the same turn.
+   *
+   *   `proxies`  one address per entry; `http`/`https`/`socks5`/`socks5h`, and
+   *              a `#pool` (or `pool+`) suffix marks a rotating pool endpoint
+   *              that is never cooled. Empty means the global outlet when one
+   *              runs, then the HTTP(S)_PROXY environment, then direct.
+   *   `maxTries` how many distinct exits one request may walk.
+   *
+   * `proxyUrl` is the pre-pool single-address field, kept so an older settings
+   * file still works: it is folded into `proxies` when the list is empty.
+   * Nothing here rotates on its own — an exit is skipped only after the upstream
+   * said that exit is spent.
+   */
+  freeLane: { proxies: [], proxyUrl: '', maxTries: 3 },
   /** Serve the OpenAI-compatible forward listener for other local harnesses. */
   forward: {
     enabled: false,
@@ -240,6 +270,14 @@ export const SETTINGS_INITIAL = {
   feedUrl: '',
   /** Minutes between announcement-feed polls; floored at 5. */
   feedPollMinutes: 30,
+  /** Where the in-plugin feedback form submits. Empty keeps the built-in
+   *  project server; an override lets a self-hosting operator point at their
+   *  own collector. Feedback is never sent anywhere else. */
+  feedbackUrl: '',
+  /** GitHub login this install completed for the feedback form: `{ token,
+   *  login, at }`, or null. The token only authorizes feedback submission —
+   *  it is not an API credential and is never sent to a model endpoint. */
+  feedbackAuth: null,
   /** Raise OS-level notifications for new announcements and updates (the
    *  browser asks for permission on the user's click). */
   notifyOs: false,
@@ -260,6 +298,10 @@ export const SETTINGS_INITIAL = {
   /** When the running code was hot-reloaded into place, and how many times. */
   reloadedAt: 0,
   reloadCount: 0,
+  /** The `reloadedAt` the browser has already acknowledged. Stored here, not
+   *  in localStorage, so a new origin (another port or the desktop shell's
+   *  random port) does not replay the same notice. */
+  reloadNoticeSeen: 0,
   /** Version installed by the in-app upgrader, for the settings page. */
   installedVersion: '',
 }

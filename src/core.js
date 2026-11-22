@@ -1,8 +1,9 @@
 // src/core/completion.js
 import { ROUTE_MAIN, ROUTE_REGION } from "./adapter.js";
 import { toOpenAiUsage } from "./forward.js";
-import { carryFailure } from "./failure.js";
+import { carryFailure } from "./http.js";
 import { effortsFor, defaultEffortFor } from "./effort.js";
+import { flattenResponsesTools, flatNamespaceToolName, normalizeToolName } from "./messages.js";
 function routableModelIds(snapshot) {
   const membership = new Set(snapshot.membership[ROUTE_MAIN] ?? []);
   if (snapshot.settings.exposeRegionModels !== false) {
@@ -37,10 +38,10 @@ function createForwardCompletion({ adapter, state, signal }) {
     }
     const openAi = request.openAi ?? {};
     const messages = Array.isArray(request.messages) ? request.messages : fromOpenAiMessages(openAi, request.responses === true, entry.id);
-    const tools = Array.isArray(request.tools) ? request.tools : (openAi.tools ?? []).map(normalizeTool).filter(Boolean);
+    const tools = Array.isArray(request.tools) ? request.tools : flattenResponsesTools(openAi.tools).tools;
     const handler = typeof onChunk === "function" ? onChunk : () => {
     };
-    const outcome = { text: "", toolCalls: [], usage: void 0, truncated: false, error: void 0 };
+    const outcome = { text: "", reasoning: "", toolCalls: [], usage: void 0, truncated: false, error: void 0 };
     const maxTokens = Number.isFinite(request.maxTokens) ? request.maxTokens : Number.isFinite(openAi.max_tokens) ? openAi.max_tokens : void 0;
     const temperature = Number.isFinite(request.temperature) ? request.temperature : Number.isFinite(openAi.temperature) ? openAi.temperature : void 0;
     const reasoningEffort = typeof request.reasoningEffort === "string" ? request.reasoningEffort : typeof openAi.reasoning_effort === "string" ? openAi.reasoning_effort : void 0;
@@ -120,21 +121,23 @@ function normaliseResponsesInput(input) {
   if (!Array.isArray(input)) return [];
   return input.map((row) => {
     if (typeof row === "string") return { role: "user", content: row };
-    if (row.type === "function_call") return { role: "assistant", content: [], tool_calls: [{ id: row.call_id, function: { name: row.name, arguments: row.arguments } }] };
+    if (row.type === "function_call") {
+      const bare = normalizeToolName(row.name) ?? "";
+      const ns = normalizeToolName(row.namespace);
+      const name = bare !== "" && ns !== void 0 ? flatNamespaceToolName(ns, bare) : row.name ?? "";
+      return { role: "assistant", content: [], tool_calls: [{ id: row.call_id, function: { name, arguments: row.arguments } }] };
+    }
     if (row.type === "function_call_output") return { role: "tool", content: String(row.output ?? ""), tool_call_id: row.call_id };
     return row;
   });
-}
-function normalizeTool(tool) {
-  const name = tool?.name ?? tool?.function?.name;
-  if (typeof name !== "string" || name.trim() === "") return null;
-  const parameters = tool?.parameters ?? tool?.function?.parameters ?? { type: "object", properties: {} };
-  return { name, description: String(tool?.description ?? tool?.function?.description ?? ""), parameters };
 }
 function foldForwardOutcome(outcome, chunk) {
   switch (chunk.type) {
     case "text-delta":
       outcome.text += chunk.text;
+      break;
+    case "reasoning-delta":
+      outcome.reasoning = (outcome.reasoning ?? "") + chunk.text;
       break;
     case "tool-call-delta": {
       let call = outcome.toolCalls.find((candidate) => candidate.slot === chunk.index);
@@ -199,15 +202,20 @@ import { fetchKiloListing } from "./kilo.js";
 import { sessionForConversation } from "./upstream.js";
 import { isSubscriptionEntry, subscriptionCatalog } from "./subscription-adapter.js";
 var FALLBACK_CATALOG = buildCatalog([
+  "deepseek-v4.1-flash-free",
+  "glm-5.3-flash-free",
   "mimo-v2.6-flash-free",
-  "mimo-v2.5-free",
-  "ling-3.0-flash-fin-free",
-  "nemotron-3-ultra-free",
   "nemotron-3.5-lightning-free",
-  "space-bunny-free",
-  "muse-spark-1.3-contributor-free",
-  "muse-spark-1.2-contributor-free"
+  "nemotron-3.5-super-vl-free",
+  "flint-40b-free"
 ]);
+var LANE_QUOTA_DEFAULT_MS = 6 * 60 * 60 * 1e3;
+var LANE_QUOTA_MAX_MS = 30 * 60 * 1e3;
+function laneWindowFor(retryAfterMs) {
+  const asked = Number(retryAfterMs);
+  if (!Number.isFinite(asked) || asked <= 0) return LANE_QUOTA_DEFAULT_MS;
+  return Math.min(Math.trunc(asked), LANE_QUOTA_MAX_MS);
+}
 function createRuntimeStores({ dataDir, logger = console }) {
   if (typeof dataDir !== "string" || !path.isAbsolute(dataDir)) {
     throw new TypeError("dataDir must be an absolute path");
@@ -252,14 +260,18 @@ function createModelRuntime({
   },
   onTopology = () => {
   },
-  subscriptionRuntime
+  subscriptionRuntime,
+  extensionRuntime = null
 }) {
   let catalog = materializeCatalog(catalogStore.get().entries ?? []);
-  let sealedCatalog = sealedCredential() === null ? [] : buildEacCatalog(catalogStore.get().sealIds ?? []);
+  let sealedCatalog = sealedCredential() === null ? [] : buildEacCatalog(
+    (catalogStore.get().sealIds ?? []).filter((id) => typeof id === "string" && id !== "" && !id.includes("[object "))
+  );
   let kiloCatalog = reviveKiloCatalog(catalogStore.get().kiloRows);
   let aggregateCatalog = [];
   let subscriptionEntries = [];
   let comboCatalog = [];
+  let extensionCatalog = [];
   let freeCatalog = catalog;
   let egress = availability.get().egress ?? null;
   let gatewayLatency = { ms: 0, at: 0 };
@@ -267,10 +279,13 @@ function createModelRuntime({
   const lifetime = new AbortController();
   let egressGeneration = 0;
   const rebuildCatalog = () => {
+    const replacedLane = extensionRuntime?.replacesLane ?? null;
+    const laneStandsDown = (entry) => replacedLane === "kilo" && isKiloEntry(entry);
     const seen = /* @__PURE__ */ new Set();
     const merged = [];
-    for (const entry of [...freeCatalog, ...sealedCatalog, ...kiloCatalog, ...aggregateCatalog, ...subscriptionEntries]) {
+    for (const entry of [...freeCatalog, ...sealedCatalog, ...kiloCatalog, ...aggregateCatalog, ...extensionCatalog, ...subscriptionEntries]) {
       if (entry === null || entry === void 0 || seen.has(entry.id)) continue;
+      if (laneStandsDown(entry)) continue;
       seen.add(entry.id);
       merged.push(entry);
     }
@@ -287,6 +302,7 @@ function createModelRuntime({
   const mergeCatalogs = () => {
     aggregateCatalog = buildAggregateCatalog(settings.get().aggregate ?? {});
     subscriptionEntries = subscriptionCatalog(subscriptionRuntime);
+    extensionCatalog = extensionRuntime === null ? [] : extensionRuntime.catalog ?? [];
     rebuildCatalog();
   };
   mergeCatalogs();
@@ -295,6 +311,7 @@ function createModelRuntime({
     membership: computeMembership(catalog, availability.get(), settings.get()),
     settings: settings.get(),
     attributionUserAgent,
+    lane: laneRow(),
     routing: {
       quota: subscriptionRuntime?.routingQuota?.() ?? {},
       usage: Object.fromEntries(catalog.map((row) => [row.id, stats.get().models?.[row.id]?.calls ?? 0]))
@@ -303,11 +320,73 @@ function createModelRuntime({
   const emitTopology = () => {
     if (!disposed) onTopology();
   };
+  function laneRow() {
+    return availability.get().lane ?? null;
+  }
+  function setLaneState(laneState, extra = {}) {
+    availability.edit((value) => ({ ...value, lane: { state: laneState, at: Date.now(), ...extra } }));
+    availability.flush();
+    emitTopology();
+  }
+  function laneGate() {
+    const lane = laneRow();
+    if (!lane || lane.state === "ok" || lane.state === void 0) return { ok: true };
+    if (lane.state === "quota") {
+      if (!Number.isFinite(lane.retryAt) || lane.retryAt <= Date.now()) return { ok: true };
+      const recorded = Number.isFinite(lane.at) ? lane.at : lane.retryAt;
+      const retryAt = Math.min(lane.retryAt, recorded + LANE_QUOTA_MAX_MS);
+      if (retryAt <= Date.now()) return { ok: true };
+      return { ok: false, state: "quota", retryAt, since: lane.at, message: lane.message ?? "" };
+    }
+    if (lane.state === "locked") {
+      return { ok: false, state: "locked", since: lane.at, message: lane.message ?? "" };
+    }
+    return { ok: true };
+  }
+  function clearLaneBreaker() {
+    const lane = laneRow();
+    if (!lane || lane.state === "ok") return false;
+    setLaneState("ok");
+    return true;
+  }
+  function recordPassiveResult(model, resultState, extra = {}) {
+    availability.edit((value) => ({
+      ...value,
+      results: {
+        ...value.results,
+        [model]: { ...value.results?.[model] ?? {}, state: resultState, source: "passive", at: Date.now(), ...extra }
+      }
+    }));
+    availability.flush();
+  }
+  function noteFreeLaneOutcome({ entry, ok, error } = {}) {
+    if (disposed || !entry || entry.channel) return;
+    if (ok === true) {
+      const lane = laneRow();
+      if (lane && lane.state !== "ok") setLaneState("ok");
+      recordPassiveResult(entry.id, STATE.available);
+      return;
+    }
+    const code = error?.code;
+    if (code === CODE.quota) {
+      const retryAt = Date.now() + laneWindowFor(error?.providerRetryAfterMs);
+      setLaneState("quota", { retryAt, message: String(error?.message ?? "free usage limit reached").slice(0, 300) });
+      recordPassiveResult(entry.id, STATE.throttled);
+      return;
+    }
+    if (code === CODE.laneLocked) {
+      setLaneState("locked", { message: String(error?.message ?? "the free tier answers this client only").slice(0, 300) });
+      recordPassiveResult(entry.id, STATE.unavailable);
+      return;
+    }
+    if (code === CODE.region) recordPassiveResult(entry.id, STATE.regionBlocked);
+  }
   const adapter = new FreeModelAdapter({
     state,
     resolveImage,
     subscriptionRuntime,
     sealedCredential,
+    extensionRuntime,
     recordUsage: (record) => {
       if (disposed) return;
       recordUsage(stats, record);
@@ -316,7 +395,12 @@ function createModelRuntime({
     recordTurn: (record) => {
       if (!disposed) recordTurn(stats, record);
     },
-    warn: (message) => logger.warn?.(message) ?? logger.log?.(message)
+    warn: (message) => logger.warn?.(message) ?? logger.log?.(message),
+    freeLaneGate: laneGate,
+    onFreeLaneOutcome: noteFreeLaneOutcome,
+    onRegionBlocked: (modelId) => {
+      if (!disposed) recordPassiveResult(modelId, STATE.regionBlocked);
+    }
     // Automatic probing is disabled by owner policy: a region refusal from a
     // real turn stays a turn failure and never fires a background probe.
   });
@@ -324,7 +408,7 @@ function createModelRuntime({
   let catalogRefreshForced = false;
   let catalogRefreshProbed = false;
   async function refreshCatalog(opts) {
-    const { probe = false, force = false, report = false } = opts ?? {};
+    const { probe = false, force = false, report = false, throttleListing = false } = opts ?? {};
     const result = (value) => report ? value : value.catalog;
     if (disposed) return result({ catalog, sources: {} });
     while (catalogRefresh !== null) {
@@ -334,7 +418,7 @@ function createModelRuntime({
       const value = await shared;
       if (disposed || (!force || sharedForced) && (!probe || sharedProbed)) return result(value);
     }
-    const run = refreshCatalogOnce({ probe, force });
+    const run = refreshCatalogOnce({ probe, force, throttleListing });
     catalogRefresh = run;
     catalogRefreshForced = force;
     catalogRefreshProbed = probe;
@@ -348,13 +432,21 @@ function createModelRuntime({
       }
     }
   }
-  async function refreshCatalogOnce({ probe, force }) {
+  const LISTING_MIN_INTERVAL_MS = 10 * 6e4;
+  let lastListingAt = 0;
+  async function refreshCatalogOnce({ probe, force, throttleListing }) {
     const sources = {};
     let ids = [];
-    try {
-      ids = parseListing(await fetchListing());
-    } catch (error) {
-      if (!disposed) logger.warn?.(`our-free-model: model listing refresh failed (${error?.message ?? error}); keeping the cached catalog`);
+    if (throttleListing === true && !force && Date.now() - lastListingAt < LISTING_MIN_INTERVAL_MS && freeCatalog.length > 0) {
+      ids = freeCatalog.map((entry) => entry.id);
+      sources.free = { ok: true, count: freeCatalog.length, skipped: "recent" };
+    } else {
+      try {
+        ids = parseListing(await fetchListing());
+        lastListingAt = Date.now();
+      } catch (error) {
+        if (!disposed) logger.warn?.(`our-free-model: model listing refresh failed (${error?.message ?? error}); keeping the cached catalog`);
+      }
     }
     if (disposed) return { catalog, sources };
     if (ids.length > 0) {
@@ -365,7 +457,7 @@ function createModelRuntime({
     } else {
       freeCatalog = materializeCatalog(catalogStore.get().entries ?? []);
     }
-    sources.free = { ok: ids.length > 0, count: freeCatalog.length };
+    if (sources.free === void 0) sources.free = { ok: ids.length > 0, count: freeCatalog.length };
     sources.sealed = await refreshSealedRoster();
     if (disposed) return { catalog, sources };
     sources.kilo = { ok: await refreshKiloRoster(), count: kiloCatalog.length };
@@ -383,7 +475,7 @@ function createModelRuntime({
       return { ok: true, count: 0, skipped: true };
     }
     try {
-      const ids = parseListing(await fetchSealedListing(credential, { signal: lifetime.signal }));
+      const ids = parseListing(await fetchSealedListing(credential, { signal: lifetime.signal }), { idsOnly: true });
       if (disposed) return;
       if (Object.hasOwn(credential, "userToken") && sealedCredential()?.userToken !== credential.userToken) return { ok: false, count: sealedCatalog.length, skipped: true };
       if (ids.length > 0) {
@@ -436,12 +528,13 @@ function createModelRuntime({
   }
   let probeRound = null;
   let probeRoundGeneration = 0;
-  let probeThrottleStreak = 0;
   let probeBackoffUntil = 0;
-  async function runProbeRound() {
+  async function runProbeRound(onlyModel) {
     const generation = egressGeneration;
-    const probeable = catalog.filter((entry) => !isEacEntry(entry) && !isKiloEntry(entry) && !isAggregateEntry(entry) && !isComboEntry(entry) && !isSubscriptionEntry(entry));
-    const results = await probeCatalog(probeable, { attributionUserAgent, signal: lifetime.signal }, (id, result) => {
+    const probeable = catalog.filter((entry) => !entry.channel && !isComboEntry(entry));
+    const targets = typeof onlyModel === "string" && onlyModel !== "" ? probeable.filter((entry) => entry.id === onlyModel) : probeable.filter((entry) => entry.pinned === true).slice(0, 1).length > 0 ? probeable.filter((entry) => entry.pinned === true).slice(0, 1) : probeable.slice(0, 1);
+    if (targets.length === 0) return {};
+    const results = await probeCatalog(targets, { attributionUserAgent, signal: lifetime.signal }, (id, result) => {
       if (disposed || generation !== egressGeneration) return;
       availability.edit((value) => ({
         ...value,
@@ -449,6 +542,7 @@ function createModelRuntime({
           ...value.results,
           [id]: {
             state: result.state,
+            source: "manual",
             ...result.detail === void 0 ? {} : { detail: result.detail },
             ...result.ttftMs === void 0 ? {} : { ttftMs: result.ttftMs },
             latencyMs: result.latencyMs,
@@ -457,28 +551,29 @@ function createModelRuntime({
           }
         }
       }));
-    }, 2);
+    }, 1);
     if (disposed || generation !== egressGeneration) return {};
     availability.update({ at: Date.now(), egress });
     availability.flush();
     const verdicts = Object.values(results);
-    if (verdicts.length > 0 && verdicts.every((row) => row.state === STATE.unavailable)) {
-      logger.warn?.(`our-free-model: the gateway refused all ${verdicts.length} models this round (${verdicts[0].detail ?? "no detail"}); keeping them advertised`);
-    }
     const allThrottled = verdicts.length > 0 && verdicts.every((row) => row.state === STATE.throttled);
-    probeThrottleStreak = allThrottled ? probeThrottleStreak + 1 : 0;
-    probeBackoffUntil = allThrottled ? Date.now() + Math.min(30 * 2 ** (probeThrottleStreak - 1), 120) * 6e4 : 0;
     if (allThrottled) {
-      logger.warn?.(`our-free-model: the probe round hit the lane's quota; availability probes pause for ${Math.round((probeBackoffUntil - Date.now()) / 6e4)} minutes (your own requests are unaffected, and the reprobe button forces a round)`);
+      probeBackoffUntil = Date.now() + 30 * 6e4;
+      logger.warn?.("our-free-model: the manual probe hit the lane quota; the breaker now carries the window");
+    } else {
+      probeBackoffUntil = 0;
     }
     emitTopology();
     return results;
   }
-  async function refreshAvailability(force = false) {
-    if (disposed || !force && probeBackoffUntil > Date.now()) return {};
+  async function refreshAvailability(force = false, { model } = {}) {
+    if (disposed) return {};
+    if (!force && probeBackoffUntil > Date.now()) return {};
+    const gate = laneGate();
+    if (!gate.ok) return { skipped: gate.state, retryAt: gate.retryAt, message: gate.message };
     if (probeRound !== null && probeRoundGeneration === egressGeneration) return probeRound;
     probeRoundGeneration = egressGeneration;
-    const round = runProbeRound();
+    const round = runProbeRound(model);
     probeRound = round;
     try {
       return await round;
@@ -501,10 +596,10 @@ function createModelRuntime({
         egress: seen,
         at: 0,
         results: expire(value.results),
-        manualResults: expire(value.manualResults)
+        manualResults: expire(value.manualResults),
+        lane: { state: "ok", at: Date.now() }
       }));
       availability.flush();
-      probeThrottleStreak = 0;
       probeBackoffUntil = 0;
       emitTopology();
       logger.info?.(`our-free-model: egress changed to ${seen.ip}${seen.country ? ` (${seen.country})` : ""}; previous availability marked stale`);
@@ -558,6 +653,8 @@ function createModelRuntime({
     refreshAvailability,
     watchEgress,
     fetchListing,
+    laneGate,
+    clearLaneBreaker,
     complete: createForwardCompletion({
       adapter,
       signal: lifetime.signal,
@@ -580,6 +677,11 @@ function createModelRuntime({
       mergeCatalogs();
       emitTopology();
       return catalog;
+    },
+    // An extension install/enable/disable/uninstall lands here: the extension
+    // runtime has already rebuilt its own rows, so this is a merge + announce.
+    syncExtensionCatalog() {
+      return this.syncAggregateCatalog();
     },
     get catalog() {
       return catalog;

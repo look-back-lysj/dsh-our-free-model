@@ -420,8 +420,11 @@ function emptyBodyFailure(status, retryAfterMs, imageContent) {
 
 export async function postStreamed({ path, body, session, attributionUserAgent, signal, onData, timeoutMs = 300000 }) {
   // The Messages wire carries the 2.x client's beta header (o2a/headers.js);
-  // the path is the only wire signal this layer sees.
-  const headers = gatewayHeaders({ session: truncateSession(session), stream: true, anthropic: path.includes('/messages') })
+  // the path is the only wire signal this layer sees. The project id derives
+  // from the same canonical session, so one conversation's retries,
+  // continuations and refreshes share one upstream quota bucket (PR #757).
+  const canonical = truncateSession(session)
+  const headers = gatewayHeaders({ session: canonical, project: canonical, stream: true, anthropic: path.includes('/messages') })
   headers['user-agent'] = userAgentWith(attributionUserAgent)
   let response
   try {
@@ -431,6 +434,13 @@ export async function postStreamed({ path, body, session, attributionUserAgent, 
     // `TimeoutError`/user Error rather than `AbortError` — testing the name alone
     // reported a cancelled turn as `TRANSPORT`, which is retryable.
     if (signal?.aborted === true || error?.name === 'AbortError') throw new UpstreamError('request aborted', CODE.aborted)
+    // A lane-configuration refusal (a missing Bun, an unusable proxy) is not an
+    // "upstream request failed": the sentence the lane wrote is already the
+    // actionable answer, so it ships unwrapped, with its flag intact for the
+    // surfaces that distinguish "fix your environment" from "upstream broke".
+    if (error?.laneConfig === true) {
+      throw new UpstreamError(String(error?.message ?? error), CODE.transport, { laneConfig: true })
+    }
     throw new UpstreamError(`our-free-model: upstream request failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
   }
 
@@ -625,7 +635,8 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
 
 /** Fetch a small JSON document from the gateway with the fingerprint headers. */
 export async function getJson(path, { session, attributionUserAgent, signal, timeoutMs = 15000 } = {}) {
-  const headers = gatewayHeaders({ session: truncateSession(session ?? ''), stream: false, accept: 'application/json' })
+  const canonical = truncateSession(session ?? '')
+  const headers = gatewayHeaders({ session: canonical, project: canonical, stream: false, accept: 'application/json' })
   headers['user-agent'] = userAgentWith(attributionUserAgent)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -650,5 +661,45 @@ export async function getJson(path, { session, attributionUserAgent, signal, tim
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener?.('abort', onCallerAbort)
+  }
+}
+
+/** Preserve classified failures across the three local forwarding protocols. */
+export function carryFailure(failure, kind = 'error') {
+  const source = failure && typeof failure === 'object' ? failure : {}
+  const code = kind === 'aborted' ? 'ABORTED' : source.code
+  const status = source.status ?? source.statusCode
+  return {
+    message: typeof source.message === 'string' && source.message ? source.message : kind === 'aborted' ? 'request aborted' : 'our free model failed the turn',
+    ...typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? { code } : {},
+    ...Number.isInteger(status) && status >= 400 && status <= 599 ? { status } : {},
+    ...Number.isFinite(source.providerRetryAfterMs) && source.providerRetryAfterMs > 0 ? { providerRetryAfterMs: source.providerRetryAfterMs } : {},
+  }
+}
+
+/** Wire error metadata; no arbitrary provider properties are forwarded. */
+export function forwardFailure(outcome, anthropic = false) {
+  const failure = carryFailure(outcome.failure ?? { message: String(outcome.error) })
+  const classes = {
+    INVALID_CREDENTIAL: [401, 'authentication_error'],
+    AUTHORIZATION_REQUIRED: [403, 'permission_error'],
+    LANE_LOCKED: [403, 'permission_error'],
+    REGION_BLOCKED: [403, 'permission_error'],
+    PERMISSION_DENIED: [403, 'permission_error'],
+    QUOTA_EXHAUSTED: [429, 'insufficient_quota'],
+    RATE_LIMIT: [429, 'rate_limit_error'],
+    CLIENT_ERROR: [400, 'invalid_request_error'],
+    ABORTED: [400, 'invalid_request_error'],
+    TIMEOUT: [504, 'server_error'],
+    EAC_UPSTREAM_FAILED: [502, 'server_error'],
+    NO_PROGRESS: [504, 'server_error'],
+  }
+  const byStatus = { 400: 'invalid_request_error', 401: 'authentication_error', 403: 'permission_error', 404: 'invalid_request_error', 429: 'rate_limit_error' }
+  const [fallbackStatus, type] = classes[failure.code] ?? [502, byStatus[failure.status] ?? 'server_error']
+  return {
+    status: failure.status ?? fallbackStatus,
+    error: { message: failure.message, type: anthropic && type === 'server_error' ? 'api_error' : type, ...(failure.code ? { code: failure.code } : {}) },
+    retryAfterMs: failure.providerRetryAfterMs,
+    classified: Boolean(failure.code || failure.status),
   }
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { createReadStream, existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
@@ -33,6 +33,8 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('content-type','application/json');
     res.end(JSON.stringify({ok:true,pid:process.pid,config:process.env.XDG_CONFIG_HOME,
       cache:process.env.XDG_CACHE_HOME,data:process.env.XDG_DATA_HOME,state:process.env.XDG_STATE_HOME,
+      home:process.env.HOME, userProfile:process.env.USERPROFILE, appData:process.env.APPDATA,
+      localAppData:process.env.LOCALAPPDATA,
       gateway:process.env.MAGPIE_ADDR, noAccountsEnv:process.env.MAGPIE_NO_ACCOUNTS || ''}));
   } else if (url.pathname === '/api/headers') {
     let body = ''; for await (const chunk of req) body += chunk;
@@ -325,6 +327,11 @@ async function fixtureTests() {
   const settings = await (await owned.request('GET', '/api/settings')).json()
   const gateway = owned.gateway()
   for (const key of ['config', 'cache', 'data', 'state']) assert(settings[key].startsWith(path.join(dataDir, 'magpie')))
+  // The engine's startup sync wires the agents found under HOME (ZCode's
+  // provider_config.json, Codex's config.toml, ...) to its own catalog: its
+  // HOME must be private, or an empty engine rewrites those agents with no
+  // models (the 2026-11-07 ZCode wipe). agent-home is that private home.
+  for (const key of ['home', 'userProfile', 'appData', 'localAppData']) assert(settings[key].startsWith(path.join(dataDir, 'magpie', 'agent-home')))
   assert.equal(settings.noAccountsEnv, '')
   assert(!JSON.stringify(starts).includes(gateway.key))
   assert.deepEqual(Object.keys(starts[0]).sort(), ['available', 'error', 'revision', 'state', 'version'])
@@ -543,6 +550,30 @@ async function fixtureTests() {
     await early.close()
     assert((await outcome) instanceof Error)
     assert.equal(early.status().state, 'closed')
+  })
+  await check('a claude-tui-broken mark from a previous engine is forgotten when the revision changes', async () => {
+    const metadata = JSON.parse(await readFile(path.join(root, 'vendor/magpie/engine.json'), 'utf8'))
+    const dataDir = await makeFixture('tui-broken')
+    const agentLocal = path.join(dataDir, 'magpie', 'agent-home', 'AppData', 'Local')
+    const marker = path.join(agentLocal, 'magpie', 'claude-tui-broken')
+    const revisionFile = path.join(dataDir, 'magpie', '.ofm-engine-revision')
+    await mkdir(path.join(agentLocal, 'magpie'), { recursive: true })
+    await writeFile(marker, '3')
+    await writeFile(revisionFile, '0000000000000000000000000000000000000000\n')
+    const upgraded = engine({ dataDir, binary: process.execPath })
+    try {
+      await upgraded.start()
+      assert(!existsSync(marker), 'a stale broken mark must not outlive an engine upgrade')
+      assert.equal((await readFile(revisionFile, 'utf8')).trim(), metadata.revision)
+      // The same revision's own mark is its business: an unchanged engine
+      // keeps it, so its backoff still spares every boot a readyWait.
+      await writeFile(marker, '2')
+    } finally { await upgraded.close() }
+    const same = engine({ dataDir, binary: process.execPath })
+    try {
+      await same.start()
+      assert(existsSync(marker), 'an up-to-date engine keeps its own broken mark')
+    } finally { await same.close() }
   })
 }
 

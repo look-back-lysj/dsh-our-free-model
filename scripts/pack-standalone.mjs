@@ -31,12 +31,13 @@ const sourceFiles = [
   'packages/standalone/providers.mjs',
   'packages/standalone/library.mjs',
   'packages/standalone/routing.mjs',
+  'packages/standalone/feedback.mjs',
   ...['business', 'contracts', 'credentials', 'images', 'runtime', 'worker']
     .map(name => `packages/standalone/channels/${name}.mjs`),
   'packages/standalone/web/index.html',
   'packages/standalone/web/assets.json',
-  ...['adapter', 'aggregate', 'anthropic', 'catalog', 'channel', 'combos', 'deferred-response', 'disclaimer', 'eac', 'eac-login', 'eac-user', 'effort',
-    'egress', 'engine-payload', 'failure', 'forward', 'gemini', 'http', 'image-pricing', 'kilo', 'local-optimize',
+  ...['adapter', 'aggregate', 'anthropic', 'catalog', 'channel', 'combos', 'disclaimer', 'eac', 'eac-login', 'eac-user', 'effort',
+    'egress', 'engine-payload', 'forward', 'gemini', 'http', 'kilo', 'local-optimize',
     'loopback-fetch', 'magpie-engine', 'magpie-models', 'magpie-policy', 'messages', 'model-test', 'open-external', 'probe', 'recovery',
     'store', 'stream', 'subscriptions', 'subscription-completion', 'subscription-adapter', 'token-saver', 'trust', 'upstream', 'vault', 'vault-data', 'vault-anchor']
     .map(name => `src/${name}.js`),
@@ -47,15 +48,21 @@ const sourceFiles = [
   // (src/o2a/SYNC.md), shipped as the release bundle built by
   // build-legacy-payload.mjs — the official assets are inlined into it.
   'src/o2a.js',
+  // The extension platform the standalone service mounts like the plugin does
+  'src/extensions.js',
+  // The plugin kernel: manifest, scans, built-ins, page bridge, bundled shelf
+  'src/plugins.js',
+  // The semver helpers extensions.js imports (updater.js is not shipped here)
+  'src/semver.js',
   'src/providers/index.js',
   'src/providers/registry.json',
   'src/route/classify.js',
   ...['index', 'inject', 'prompts'].map(name => `src/token-saver/${name}.js`),
   ...['index', 'constants', 'autodetect', 'applyFilter', 'hitLine', 'registry']
-    .map(name => `src/token-saver/rtk/${name}.js`),
+    .map(name => `src/token-saver/compact/${name}.js`),
   ...['buildOutput', 'dedupLog', 'find', 'gitDiff', 'gitLog', 'gitStatus', 'grep', 'ls',
     'readNumbered', 'searchList', 'smartTruncate', 'tree']
-    .map(name => `src/token-saver/rtk/filters/${name}.js`),
+    .map(name => `src/token-saver/compact/filters/${name}.js`),
   'vendor/channel-pack/qoder-auth-wasm.wasm',
   'vendor/channel-pack/LICENSE',
   'vendor/channel-pack/NOTICE.md',

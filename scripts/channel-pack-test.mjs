@@ -60,6 +60,19 @@ process.env.QODER_MACHINE_TOKEN_PATH = path.join(scratch, 'machine-token.json')
 process.env.QODER_RUNTIME_INFO = path.join(scratch, 'missing-runtime-info.exe')
 const savedFetch = globalThis.fetch
 const fetched = []
+/**
+ * 出口替身：默认关闭，只有 issue #762 的 Gemini 配额用例会临时打开。
+ * 打开后 `network.fetch` 必须走这里，而不是 `globalThis.fetch`。
+ */
+const outletState = { active: false, requests: [], respond: undefined }
+const outlet = {
+  active: () => outletState.active,
+  fetch: async (input, init) => {
+    outletState.requests.push(String(input instanceof Request ? input.url : input))
+    if (outletState.respond === undefined) throw new Error('fixture outlet has no responder')
+    return outletState.respond(input, init)
+  },
+}
 let auditFetch
 const offlineFetch = async (url, init) => {
   if (auditFetch) return auditFetch(url, init)
@@ -116,7 +129,7 @@ fs.writeFileSync(path.join(scratch, 'channel-pack/state.json'), JSON.stringify(s
 try {
   const pack = await import(sourceMode ? '../vendor/channel-pack/src/index.ts' : '../vendor/channel-pack/pack.js')
   const { apply } = pack
-  apply(ctx, { disableOpencode: true })
+  apply(ctx, { disableOpencode: true, outlet })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(adapters.has('opencode'), false, 'disabled account provider is not registered')
   assert.equal(adapters.size, 10, 'all other account providers remain registered')
@@ -190,7 +203,7 @@ try {
   creds.delete('AUTO_LOOMY_FIXTURE')
   console.log(`ok  ${sourceMode ? 'source modules' : 'generated pack'}: 10 providers, no OpenCode registration/warmup, historical data retained, account RPCs refused`)
   if (sourceMode) await verifySourceRegressions({ ctx, adapters, call, creds })
-  await verifyChannelCreditsRpc({ ctx, call, creds, adapters })
+  await verifyChannelCreditsRpc({ ctx, call, creds, adapters, outletState })
   console.log('ok  实际渠道 RPC：七渠道仅账号池凭据即可查余额，ZCode 账号池回退及缺凭据反馈')
 
   // A failed browser callback must become a terminal, readable poll result.
@@ -626,6 +639,26 @@ async function verifySourceRegressions({ ctx, adapters, call, creds }) {
       assert.deepEqual(quota.marked.map(row => row[0]), ['a'])
       assert.deepEqual(quota.switched, [])
       assert.ok(quota.chunks.some(row => row.type === 'text-delta' && row.text === 'quota-rotated-ok'))
+
+      // 112 与带 pricingUrl 的引导页同样是额度耗尽（#721）：只认 110 时这两种
+      // 形态完全不匹配，死号永远不被标记，每轮都被重新选中。
+      for (const quotaBody of [
+        { code: 112, model_error: 'model quota exhausted', pricingUrl: 'https://qoder.com/pricing' },
+        { code: 110, message: 'Billing daily count exceeded' },
+        { error: { message: 'quota exhausted', pricingUrl: 'https://qoder.com/pricing' } },
+      ]) {
+        for (const transport of ['http', 'sse']) {
+          const shaped = await run({
+            kind: 'quota', candidates: ['b'], product: QODER_CN,
+            responseForAttempt: (_attempt, token) => token === 'token-a'
+              ? (transport === 'http' ? Response.json(quotaBody, { status: 403 }) : new Response(envelope(quotaBody)))
+              : answerSse('shaped-quota-ok'),
+          })
+          assert.equal(shaped.error, undefined, `${transport} ${JSON.stringify(quotaBody)} must rotate, not fail`)
+          assert.deepEqual(shaped.sent, ['token-a', 'token-b'], `${transport} ${JSON.stringify(quotaBody)} must rotate accounts`)
+          assert.deepEqual(shaped.marked.map(row => row[0]), ['a'], `${transport} ${JSON.stringify(quotaBody)} must mark the dead account`)
+        }
+      }
 
       for (const product of [undefined, QODER_CN]) {
         for (const transport of ['http', 'sse']) {

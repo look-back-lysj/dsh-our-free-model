@@ -55,6 +55,24 @@ check('expired items are dropped', () => {
   const feed = parseFeed({ announcements: [item({ expiresAt: '2026-09-20T00:00:00Z' }), item({ id: 'live', expiresAt: '2026-10-01T00:00:00Z' })] }, NOW)
   assert.deepEqual(feed.announcements.map(row => row.id), ['live'])
 })
+check('holdSeconds: kept in range, clamped/absent outside it', () => {
+  const feed = parseFeed({ announcements: [
+    item({ id: 'h-3', holdSeconds: 3 }),
+    item({ id: 'h-0', holdSeconds: 0 }),
+    item({ id: 'h-31', holdSeconds: 31 }),
+    item({ id: 'h-neg', holdSeconds: -2 }),
+    item({ id: 'h-frac', holdSeconds: 2.5 }),
+    item({ id: 'h-str', holdSeconds: '3' }),
+  ] }, NOW)
+  const holdOf = id => feed.announcements.find(row => row.id === id)?.holdSeconds
+  assert.equal(holdOf('h-3'), 3)
+  assert.equal(holdOf('h-0'), undefined, '0 carries no field')
+  assert.equal(holdOf('h-31'), undefined, 'above the 30s ceiling is dropped')
+  assert.equal(holdOf('h-neg'), undefined)
+  assert.equal(holdOf('h-frac'), undefined)
+  assert.equal(holdOf('h-str'), undefined)
+})
+
 check('unknown level falls back to info; overlong html row dropped', () => {
   const feed = parseFeed({ announcements: [item({ level: 'shout' })] }, NOW)
   assert.equal(feed.announcements[0].level, 'info')
@@ -249,6 +267,49 @@ check('an announcement that expires while the process runs stops rendering (view
   assert.deepEqual(store.view({}).items.map(row => row.id), ['kept', 'plain'], 'expired item filtered at read time')
   assert.equal(store.view({}).unread, 2)
   assert.equal(store.view({ ackedIds: ['kept'] }).unread, 1)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+// A retracted announcement cannot reach an install that already cached the
+// item: the cache is a snapshot of the old document, so it carries no
+// `expiresAt` to filter on and the urgent modal keeps opening on every visit.
+// The fix bounds the right to interrupt at the consumer instead of trusting a
+// snapshot indefinitely.
+check('a stale cache keeps the entry but loses the right to interrupt (retraction reaches old caches)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-feed-stale-'))
+  const cacheFile = path.join(dir, 'f.json')
+  const write = fetchedAt => fs.writeFileSync(cacheFile, JSON.stringify({
+    fetchedAt, source: 'raw',
+    // Exactly the shape an install would hold: no expiresAt, because the
+    // retraction had not been written yet when this copy was fetched.
+    announcements: [item({ id: 'retracted', level: 'urgent', holdSeconds: 5 }), item({ id: 'normal' })],
+  }))
+  const open = () => {
+    const store = new AnnouncementFeed({ settings: () => ({}), cacheFile, onArrival: () => {}, defaultSources: CONTROLLED_DEFAULTS })
+    store.load()
+    return store.view({}).items
+  }
+
+  // Fresh copy: the urgent item is allowed to interrupt.
+  write(Date.now())
+  assert.equal(open().find(row => row.id === 'retracted').muted, undefined, 'a fresh snapshot still raises the modal')
+  assert.equal(open().find(row => row.id === 'normal').muted, undefined, 'non-urgent rows are never muted')
+
+  // One hour old: still inside the window, still allowed (absorbs one missed poll).
+  write(Date.now() - 60 * 60_000)
+  assert.equal(open().find(row => row.id === 'retracted').muted, undefined)
+
+  // Past the window: listed, but muted — this is what stops a retracted
+  // announcement from interrupting forever on an unreachable network.
+  write(Date.now() - 3 * 60 * 60_000)
+  const stale = open()
+  assert.ok(stale.some(row => row.id === 'retracted'), 'the entry is still listed; only the interruption is withheld')
+  assert.equal(stale.find(row => row.id === 'retracted').muted, true, 'a stale snapshot may not open a full-screen modal')
+  assert.equal(stale.find(row => row.id === 'normal').muted, undefined, 'muting is scoped to urgent rows')
+
+  // A cache that never completed a poll is not trustworthy either.
+  write(0)
+  assert.equal(open().find(row => row.id === 'retracted').muted, true, 'never-fetched cache cannot interrupt')
   fs.rmSync(dir, { recursive: true, force: true })
 })
 

@@ -66,7 +66,7 @@
  */
 
 import { withDeadModelPruning } from './dead-model-store.js'
-import { FALLBACK_IMAGE_PRICING } from '../../../src/image-pricing.js'
+import { FALLBACK_IMAGE_PRICING } from '../../../src/adapter.js'
 
 /** dsh-llm 对「configurable provider 已存在」抛的 code。**当前仅作防御**保留。 */
 const DUPLICATE_DIRECTORY = 'DUPLICATE_DIRECTORY'

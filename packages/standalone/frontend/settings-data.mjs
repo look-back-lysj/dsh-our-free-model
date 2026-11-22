@@ -9,6 +9,11 @@ export function settingsDraft(settings) {
     standaloneProbe: settings.standaloneProbe,
     defaultMaxTokens: String(settings.defaultMaxTokens),
     probeIntervalMinutes: String(settings.probeIntervalMinutes),
+    // The free lane's exit pool. The server sends masked labels only, so the
+    // draft starts empty: an edit means pasting the whole list again, the same
+    // trade the desktop page makes for a credential-shaped field.
+    laneExits: '',
+    laneMaxTries: String(settings.freeLane?.maxTries ?? 3),
   }
 }
 
@@ -30,18 +35,24 @@ export function syncSettings(state, saved, saving) {
 /** Only form-owned settings are submitted; preserve per-model choices made elsewhere.
  * @param {ReturnType<typeof settingsDraft>} draft */
 export function validateSettingsDraft(draft) {
-  /** @type {Partial<Record<'defaultMaxTokens' | 'probeIntervalMinutes', string>>} */
+  /** @type {Partial<Record<'defaultMaxTokens' | 'probeIntervalMinutes' | 'laneMaxTries', string>>} */
   const errors = {}
   for (const [key, label, min, max] of [
     ['defaultMaxTokens', '最大输出 Token', 512, 131072],
     ['probeIntervalMinutes', '刷新间隔', 1, 1440],
+    ['laneMaxTries', '每回合换出口数', 1, 8],
   ]) {
-    const raw = draft[key].trim()
+    const raw = String(draft[key] ?? '').trim()
     const value = Number(raw)
     if (!raw || !Number.isInteger(value) || value < min || value > max) {
       errors[key] = `${label}必须是 ${min}–${max} 的整数。`
     }
   }
+  const laneExits = String(draft.laneExits ?? '').split('\n').map(line => line.trim()).filter(line => line !== '')
+  // An empty box means "keep the stored list", so the patch only carries the
+  // exits when the owner actually typed some.
+  const freeLane = { maxTries: Number(draft.laneMaxTries) }
+  if (laneExits.length > 0) freeLane.proxies = laneExits
   return {
     errors,
     patch: Object.keys(errors).length ? null : {
@@ -49,6 +60,7 @@ export function validateSettingsDraft(draft) {
       hideFreeModels: draft.hideFreeModels, hideEacModels: draft.hideEacModels,
       streamRecovery: draft.streamRecovery, standaloneProbe: draft.standaloneProbe,
       defaultMaxTokens: Number(draft.defaultMaxTokens), probeIntervalMinutes: Number(draft.probeIntervalMinutes),
+      freeLane,
     },
   }
 }

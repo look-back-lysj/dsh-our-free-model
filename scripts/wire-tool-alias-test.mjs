@@ -40,7 +40,10 @@ for (const style of [false, true, 'claude']) {
   assert.ok(!definitions.some(t => t.name === 'subagent_fork' || t.name === 'working_directory'))
   for (const [wire, source] of [[WIRE.subagent_fork, 'subagent_fork'], [WIRE.working_directory, 'working_directory']]) {
     const t = definitions.find(t => t.name === wire)
-    assert.equal(t.description, `Caller ${source}`)
+    // The caller's words survive; only the ASCII spaces become NBSP, which is
+    // what stops a literal phrase in a caller description matching an upstream
+    // rule. The model reads the same text.
+    assert.equal(t.description, `Caller\u00a0${source}`)
     assert.deepEqual(t.parameters ?? t.input_schema, schema)
   }
   assert.deepEqual(tools, original, 'caller definitions must not be mutated')
@@ -49,15 +52,15 @@ for (const style of [false, true, 'claude']) {
     assert.equal(body.input[1].call_id, 'call1')
     assert.equal(body.input[1].output, 'result')
     assert.equal(body.tool_choice.name, WIRE.subagent_fork)
-    // v1.4.6 injects the official CLI prompt first; the caller's text is folded after it.
-    assert.ok(body.instructions.startsWith('You are opencode, an interactive CLI tool'))
+    // OFM context precedes the preserved caller instructions.
+    assert.ok(body.instructions.startsWith("You are an AI agent running in OpenCode, a coding agent harness."))
     assert.ok(body.instructions.includes('Preserve caller instructions'))
   } else if (style === 'claude') {
     assert.equal(body.messages[0].content[0].name, WIRE.working_directory)
     assert.equal(body.messages[1].content[0].tool_use_id, 'call1')
     assert.equal(body.tool_choice.name, WIRE.working_directory)
-    // The official prompt is prepended as its own text block; the caller's block follows.
-    assert.equal(body.system[0].text.startsWith('You are opencode, an interactive CLI tool'), true)
+    // OFM context occupies its own block; the caller block follows.
+    assert.equal(body.system[0].text.startsWith("You are an AI agent running in OpenCode, a coding agent harness."), true)
     assert.equal(body.system[1].text, 'Preserve caller instructions')
   } else {
     const history = body.messages.find(m => m.tool_calls)

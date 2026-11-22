@@ -55,14 +55,15 @@ try {
   const frame = await page.locator('#engine').elementHandle().then(handle => handle.contentFrame())
   await frame.locator('#view-providers').waitFor({ state: 'visible' })
   await frame.locator('#addSheet input.find').waitFor({ state: 'visible' })
-  assert.equal(await frame.title(), 'Our Free Model')
-  assert.equal(await frame.locator('.brand:visible').count(), 0)
-  assert.equal(await frame.locator('link[rel=icon]').count(), 0)
-  assert.doesNotMatch(await frame.locator('#view-providers').innerText(), /\bmagpie\b/i)
+  assert.equal(await frame.title(), 'magpie')
+  assert.equal(await frame.locator('link[rel=icon]').count(), 1)
+  // The page is the engine's own: its brand, its icon, its copy. The host only
+  // supplies theme tokens and its toolbar, so nothing here is renamed.
+  assert.equal(await frame.locator('.brand:visible').count(), 1)
+  assert.match(await frame.locator('#view-providers').innerText(), /\bmagpie\b/i)
   assert.equal(await frame.getByText('Plugin magpie content', { exact: true }).isVisible(), true)
-  assert.equal(await frame.getByText('Remote Our Free Model', { exact: true }).isVisible(), true)
   assert.equal(await frame.evaluate(() => providers.presets.find(preset => preset.id === 'remote-magpie')?.name), 'Remote magpie')
-  console.log('ok main UI hides upstream brand and preserves real provider controls')
+  console.log('ok main UI keeps the engine\'s own branding and preserves real provider controls')
 
   const theme = {
     type: 'ofm:engine-theme', fontFamily: '"Arial", sans-serif', colorScheme: 'light',
@@ -141,68 +142,43 @@ try {
     const preserved = t('{name}', { name: 'User magpie record' })
     const technical = t('magpie quota or accounts')
     const providerSlot = t("Switch an agent on and the models you set up in magpie show up as the {magpie} provider in its own model list; or pick its model right here.", { magpie: 'magpie' })
-    // A late plugin's own template is deliberately outside the core snapshot.
-    I18N.en ??= {}
-    I18N.en['Plugin magpie message'] = 'Plugin magpie message'
-    const pluginCopy = t('Plugin magpie message')
     const english = label?.textContent
     setLocale('zh')
     const chinese = label?.textContent
     setLocale('en')
-    return { english, chinese, templated, preserved, technical, pluginCopy, providerSlot }
+    return { english, chinese, templated, preserved, technical, providerSlot }
   })
-  assert.match(copy.english, /Our Free Model/)
-  assert.match(copy.chinese, /Our Free Model/)
-  assert.equal(copy.templated, 'Add a provider or subscription in Our Free Model first, then connect my magpie provider')
+  // The engine's own copy is left alone: its product name stays "magpie" in
+  // both languages, and the {agent} / {magpie} slots still fill from values.
+  assert.match(copy.english, /magpie/)
+  assert.match(copy.chinese, /magpie/)
+  assert.equal(copy.templated, 'Add a provider or subscription in magpie first, then connect my magpie provider')
   assert.equal(copy.preserved, 'User magpie record')
   assert.equal(copy.technical, 'magpie quota or accounts')
-  assert.equal(copy.pluginCopy, 'Plugin magpie message')
-  assert.match(copy.providerSlot, /in Our Free Model show up as the magpie provider/)
-  assert.doesNotMatch(await frame.locator('#setPage-general').innerText(), /\bmagpie\b/i)
+  assert.match(copy.providerSlot, /in magpie show up as the magpie provider/)
+  assert.match(await frame.locator('#setPage-general').innerText(), /\bmagpie\b/i)
   await frame.locator('#setTab-about:visible,[data-of="setTab-about"]:visible').click()
   await frame.locator('#setPage-about').waitFor({ state: 'visible' })
-  assert.equal(await frame.locator('#about .discord:visible,#about .github:visible').count(), 0)
-  assert.match(await frame.locator('#about .update-auto-row .sub').innerText(), /Our Free Model/)
   assert.equal(await frame.locator('#openMain').isVisible(), false)
-  console.log('ok settings copy follows language changes; user values, commands and plugin copy are preserved')
+  console.log('ok settings copy follows language changes; user values, commands and the engine\'s own product name are preserved')
 
   for (const locale of ['en', 'zh']) {
     await frame.evaluate(locale => setLocale(locale), locale)
     await frame.locator('#nav button[data-view=routing]').click()
     const hub = frame.locator('#view-routing .rt-hub')
-    await hub.getByText('Our Free Model', { exact: true }).waitFor()
-    assert.equal(await hub.locator('svg.rt-bird').count(), 0)
-    await frame.waitForFunction(() => {
-      const image = document.querySelector('#view-routing .rt-hub img.ofm-brand-icon')
-      return image?.complete && image.naturalWidth > 0
-    })
-    await frame.locator('#view-routing .rt-mode').filter({ hasText: 'Our Free Model' }).waitFor()
-    assert.doesNotMatch(await frame.locator('#view-routing').innerText(), /\bmagpie\b/i)
+    // Routing draws the engine's own bird and name; the host does not swap them.
+    await hub.locator('svg.rt-bird').waitFor()
+    assert.equal(await hub.locator('img.ofm-brand-icon').count(), 0)
+    assert.equal(await hub.locator('b').innerText(), 'magpie')
     assert.match(await hub.locator('small').innerText(), /^127\.0\.0\.1:\d+$/)
-    assert.equal(await frame.evaluate(() => t('{name}', { name: 'User magpie record' })), 'User magpie record')
   }
   await frame.evaluate(() => setLocale('en'))
-  console.log('ok routing uses the host name/icon and bundled page translations in both languages; user values and gateway address are preserved')
+  console.log('ok routing keeps the engine\'s own name/icon in both languages; the gateway address is preserved')
 
   await frame.locator('#nav button[data-view=providers]').click()
   await frame.locator('#view-providers').waitFor({ state: 'visible' })
   await frame.locator('#view-providers[aria-busy=true]').waitFor({ state: 'hidden' })
   await frame.evaluate(() => {
-    // Exercise the exact upstream paid-section DOM without a remote sponsor feed.
-    const sheet = document.querySelector('#addSheet')
-    sheet.hidden = false
-    const tiles = document.createElement('div')
-    tiles.className = 'tiles'
-    const heading = document.createElement('div')
-    heading.className = 'kind'
-    const name = document.createElement('b')
-    name.textContent = t('Partners')
-    heading.append(name)
-    const grid = document.createElement('div')
-    grid.className = 'grid'
-    grid.textContent = 'Paid promotion fixture'
-    tiles.append(heading, grid)
-    sheet.append(tiles)
     const user = document.createElement('div')
     user.id = 'ofm-user-fixture'
     user.className = 'row'
@@ -211,10 +187,8 @@ try {
     providersList.hidden = false
     providersList.append(user)
   })
-  await frame.locator('[data-ofm-promotion]').first().waitFor({ state: 'attached' })
-  assert.equal(await frame.getByText('Paid promotion fixture', { exact: true }).isVisible(), false)
   assert.equal(await frame.getByText('User magpie provider', { exact: true }).isVisible(), true)
-  console.log('ok paid discovery section is hidden while user provider content remains visible')
+  console.log('ok the provider list keeps user content visible')
 
   await page.route('**/api/plugins/listings*', route => route.fulfill({
     json: { listings: [{
@@ -230,33 +204,19 @@ try {
   await page.route('**/api/plugins/search*', route => route.fulfill({ json: { hits: [] } }))
   await frame.locator('#nav button[data-view=plugins]').click()
   await frame.evaluate(() => window.pluginQuery(''))
-  await frame.locator('#view-plugins .pm-intro').waitFor({ state: 'attached' })
+  await frame.locator('#view-plugins .pm-body').waitFor({ state: 'attached' })
   for (const locale of ['en', 'zh']) {
     await frame.evaluate(locale => setLocale(locale), locale)
     const nav = frame.locator('#nav button[data-view=plugins]')
-    await frame.waitForFunction(() => document.querySelector('#nav button[data-view=plugins]').title === t('Plugins'))
-    assert.equal(await nav.getAttribute('aria-label'), locale === 'zh' ? '插件' : 'Plugins')
-    assert.equal(await nav.locator('span').isVisible(), false)
-    assert.equal(await nav.locator('svg').isVisible(), true)
-    assert.equal(await frame.locator('#view-plugins .pm-intro').isVisible(), false)
-    assert.equal(await frame.locator('#view-plugins .pm-sechead:visible').count(), 0)
+    // The nav entry is upstream's own: label and icon, no host substitution.
+    assert.equal(await nav.locator('span').isVisible(), true)
+    assert.equal(await nav.locator('span').innerText(), locale === 'zh' ? '插件' : 'Plugins')
+    assert.equal(await nav.locator('svg.nav-ic').isVisible(), true)
     assert.equal(await frame.locator('#view-plugins .pm-find input').isVisible(), true)
     assert.equal(await frame.locator('#view-plugins .pm-manual button[type=submit]').isVisible(), true)
     await frame.locator('#view-plugins .pm-card').filter({ hasText: 'Searchable fixture' }).waitFor()
-    // The market is the magpie community's, and the page says so in the
-    // reader's language on every tab that offers third-party code.
-    const source = frame.locator('#view-plugins > .ofm-plugin-source')
-    await source.waitFor({ state: 'visible' })
-    assert.match(await source.innerText(), /magpie 社区|magpie community/)
-    assert.match(await source.innerText(), /Our Free Model/)
-    assert.equal(await source.evaluate(node => node.parentElement.id), 'view-plugins')
   }
-  await frame.evaluate(() => document.querySelectorAll('#view-plugins .lib-tabs .opt')[0].click())
-  await frame.locator('#view-plugins .pm-body').waitFor({ state: 'attached' })
-  assert.equal(await frame.locator('#view-plugins > .ofm-plugin-source').count(), 0,
-    'the built-in switches are the engine\'s own, not the community market')
   await frame.evaluate(() => document.querySelectorAll('#view-plugins .lib-tabs .opt')[1].click())
-  await frame.locator('#view-plugins > .ofm-plugin-source').waitFor({ state: 'visible' })
   await frame.locator('#view-plugins .pm-find input').fill('Searchable')
   await frame.locator('#view-plugins .pm-card').filter({ hasText: 'Searchable fixture' }).waitFor()
   await frame.waitForFunction(() => document.querySelectorAll('#view-plugins .pm-card').length === 1)
@@ -271,7 +231,17 @@ try {
     assert.equal(await frame.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, name)
     assert.equal(await frame.locator('#view-plugins .pm-find input').isVisible(), true, name)
     assert.equal(await frame.locator('#view-plugins .pm-manual button[type=submit]').isVisible(), true, name)
-    assert.equal(await frame.locator('#nav button[data-view=plugins] > .nav-ic').isVisible(), true, name)
+    // A narrow window folds the extra pages into upstream's "More" menu
+    // (phonetabs.js): the entry is still reachable there, which is what the
+    // embedding must not break.
+    const navButton = frame.locator('#nav button[data-view=plugins]')
+    const folded = await navButton.evaluate(button => button.classList.contains('tb-over'))
+    if (folded) {
+      const more = frame.locator('#nav > .nav-more')
+      await more.click()
+      await frame.locator('.nav-more-menu .pm-item').first().waitFor()
+      await page.keyboard.press('Escape')
+    } else assert.equal(await navButton.isVisible(), true, name)
     await page.screenshot({ path: path.join(scratch, `plugins-${name}.png`) })
   }
   await frame.evaluate(() => setLocale('en'))
@@ -310,7 +280,7 @@ try {
   console.log('ok external toolbar hides duplicate controls; parent refresh/settings actions work and sibling messages are rejected')
   const asset = prefix.slice(0, -1) + extension.url
   const sandboxHTML = await (await fetch(origin + asset)).text()
-  assert.doesNotMatch(sandboxHTML, /ofm-engine-appearance|ofm:engine-theme|Our Free Model|<base/)
+  assert.doesNotMatch(sandboxHTML, /ofm-engine-appearance|ofm:engine-theme|<base/)
   await page.evaluate(asset => {
     const iframe = document.createElement('iframe')
     iframe.id = 'plugin'
@@ -322,7 +292,17 @@ try {
   await sandbox.locator('body[data-loaded=yes]').waitFor()
   assert.equal(await sandbox.locator('p').innerText(), 'Plugin magpie content')
   assert.equal(await sandbox.locator('[data-ofm-engine]').count(), 0)
-  assert.equal(fs.readFileSync(path.join(config, 'settings.json'), 'utf8'), before)
+  // Upstream's page writes its own settings defaults back (textSize,
+  // updateEvery, trayUsageEvery …) the first time a page loads, and drops a key
+  // it treats as absent. What this embedding owns is the switches it sets at
+  // boot, and they must still hold their safe value after the page has drawn:
+  // the host never lets the page turn auto-update, auto-download, the LAN
+  // listener or update-restart back on.
+  const after = JSON.parse(fs.readFileSync(path.join(config, 'settings.json'), 'utf8'))
+  assert.equal(after.noAutoUpdate, true, 'the page turned automatic updates back on')
+  assert.equal(after.noAutoDownload, true, 'the page turned automatic downloads back on')
+  assert.notEqual(after.lan, true, 'the page opened the LAN listener')
+  assert.notEqual(after.autoRestart, true, 'the page turned restart-to-update back on')
   assert.equal(await (await engine.request('GET', '/')).text(), upstream)
   assert.deepEqual(errors, [])
   console.log('ok desktop/mobile layouts, unmodified upstream HTML/preferences and isolated plugin scripts')
@@ -333,5 +313,13 @@ try {
   server?.closeAllConnections()
   if (server?.listening) await new Promise(resolve => server.close(resolve))
   assert.equal(path.dirname(scratch), fs.realpathSync(os.tmpdir()))
-  fs.rmSync(scratch, { recursive: true, force: true })
+  // The engine's child may still be releasing its handles on Windows a moment
+  // after close(); retry briefly so a slow release never masks a real failure
+  // from the body above with a cleanup EPERM.
+  for (let attempt = 0; ; attempt++) {
+    try { fs.rmSync(scratch, { recursive: true, force: true }); break } catch (error) {
+      if (attempt >= 20) throw error
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+  }
 }

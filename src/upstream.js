@@ -1,61 +1,11 @@
 /**
- * Upstream wire for the免密 free lane.
+ * Free-lane transport and request adaptation.
  *
- * Every fact encoded here was verified against the live gateway on 2026-09-24
- * by direct request: the public pooled
- * credential, the client fingerprint headers, the per-model endpoint split, the
- * free-tier tool-fingerprint gate (403 FreeTierError without it), the
- * per-session quota accounting (429 FreeUsageLimitError when a fresh session is
- * minted per request), and the regional gate (403 RegionError).
- *
- * Re-verified 2026-10-14 after the lane moved: the free models now answer on
- * `/inference/v1` (the old `/zen/v1` chat path answers 403 FreeTierError for
- * every one of them), a request must send `x-opencode-session-id` next to
- * `x-opencode-session`, and the session id has to be minted rather than derived.
- * Details and the measurements: docs/free-lane-wire.md.
- *
- * Re-verified 2026-10-16 against the **v2** client fingerprint (the shape the
- * official client has sent since 2026-10-14). The v2 gate compares declared
- * definitions and headers directly; see the re-verifications in
- * `src/o2a/` — the port of the reference gateway's shaping — for the current
- * fact list.
- *
- * **2026-10-31: the shaping layer was replaced with a port of
- * https://github.com/jasonxu114514/opencode2api v1.4.6** (commit 58f5667), the
- * reference gateway this lane has tracked since 2026-10-17. The request-shaping
- * logic no longer lives here: {@link module:src/o2a/version} names the ported
- * release, and `src/o2a/SYNC.md` maps every Go file to its JS port together
- * with the deviations this adapter keeps. What changed with the port:
- *
- * - **Every client tool is renamed to an opaque `clint_<digest>` wire name**
- *   and the full 13-tool official CLI set is appended from the captured
- *   `opencode_tools.json` — the free tier refuses bodies that still carry
- *   another client's tool vocabulary (2026-10-30's two-entry alias table was
- *   the same discovery in miniature, and is superseded).
- * - **The official CLI system prompt is injected in full** (base prompt +
- *   `<env>` + skill listing, per wire), replacing the bare env block; the
- *   2026-10-28 finding that a bare env block suffices stays true, but the full
- *   prompt is what the reference sends.
- * - **Per-request 40-hex `x-opencode-project`** replaces the shared `global`
- *   bucket: free-tier quota is ledged per project id × egress, so a shared id
- *   is one shared bucket that arrives pre-burned.
- * - **Endpoints follow the 2.1 client's provider-family grouping**
- *   (`/inference/openai/v1/...`, `/inference/anthropic/v1/messages?beta=true`);
- *   the flat `/inference/v1/...` routes still answer but are the older shape.
- * - **Chat bodies gain the client's own ceiling** (`max_completion_tokens`
- *   32000 when the caller named none) and `stream_options.include_usage`.
- * - **Session minting follows the reference's slow clock** (`src/o2a/identity.js`):
- *   today's UTC midnight minus a hash-derived offset of at most 30 days, so a
- *   session's date never leaves the window the upstream accepts — the general
- *   fix for the 2026-10-28 finding that implausible timestamps answer 429.
- *   One conversation still maps to one persisted session, and sessions whose
- *   stored date has drifted out of the accepted window are re-minted.
- *
- * The adapter keeps the plugin-specific behaviors the reference has no need
- * for (each is a listed deviation in SYNC.md): the placeholder note for the
- * injected officials, `tool_choice: 'none'` stripping (the gate refuses it),
- * the Responses `auto` default, block identity across prompt injection, and
- * the idempotence pass for already-shaped bodies.
+ * Request shaping is loaded from the generated src/o2a.js bundle. The source
+ * modules and OFM-authored context/tool descriptions live in src/o2a/; see
+ * SYNC.md for the replacement status and verification boundaries.
+ * Historical reference markers remain exported for caller compatibility.
+ * Their presence does not mean the new implementation mirrors that release.
  *
  * @module src/upstream.js
  */
@@ -65,15 +15,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { DATA_DIR_NAME, resolveDshHome } from './store.js'
 // 发布形态唯一导入点：src/o2a.js 由 scripts/build-legacy-payload.mjs 把
-// src/o2a/ 八个模块（官方资产内联）打成单文件；开发/测试直接跑仓库里的产物。
+// src/o2a/ 八个模块（OFM 资产内联）打成单文件；开发/测试直接跑仓库里的产物。
 import {
   BASE62_ALPHABET,
   CANONICAL_SESSION_RE,
   CLIENT_UA,
   DESCENDING_TIME_RE,
-  O2A_VERSION,
   ToolRenameMap,
-  canonicalSessionID,
+  mintSessionIdentifier,
   ensureChatUsage,
   ensureV2CompletionLimit,
   gatewayHeaders as o2aGatewayHeaders,
@@ -83,7 +32,7 @@ import {
   phaseAgeMs,
   randomID,
   randomProjectID,
-  renameAndCompleteTools,
+  shapeToolSurface,
   renamableToolName,
   sessionPhaseMs,
 } from './o2a.js'
@@ -95,12 +44,6 @@ import {
 export const UPSTREAM_BASE = process.env.OUR_FREE_MODEL_BASE ?? 'https://opencode.ai'
 
 export { CLIENT_UA }
-
-/**
- * Which opencode2api release the shaping layer currently mirrors. Bumped with
- * `src/o2a/version.js` on every port refresh.
- */
-export const O2A_PORTED_VERSION = O2A_VERSION
 
 const MAX_SESSION_LENGTH = 256
 const MAX_TOOL_NAME_LEN = 128
@@ -130,12 +73,12 @@ export function isCanonicalSession(id) {
 /**
  * Re-encode any session signal into the canonical layout the gate accepts,
  * keeping one signal on one session for the life of the process
- * (`o2a/identity.canonicalSessionID`): official sessions pass through, and a
+ * (`o2a/identity.mintSessionIdentifier`): official sessions pass through, and a
  * synthesized one carries a slow-clock timestamp inside the window the
  * upstream accepts, salted per process so a restart re-mints.
  */
 export function canonicalizeSession(signal) {
-  return canonicalSessionID(signal)
+  return mintSessionIdentifier(signal)
 }
 
 /** Render `bytes` as base62, one character per byte (`base62From`). */
@@ -314,11 +257,20 @@ export function gatewayHeaders(options) {
   return o2aGatewayHeaders(options)
 }
 
-function toolNameOf(tool) {
-  if (!tool || typeof tool !== 'object' || Array.isArray(tool)) return ''
-  if (typeof tool.name === 'string' && tool.name.trim()) return tool.name.trim()
-  const fn = tool.function
-  if (fn && typeof fn === 'object' && !Array.isArray(fn) && typeof fn.name === 'string') return fn.name.trim()
+/**
+ * The name a tool declaration carries, whichever of the two wire shapes it uses.
+ *
+ * Chat puts it at `function.name`, Responses and the flat Anthropic shape put it at
+ * the top level. A non-string or blank name is treated as absent rather than coerced,
+ * because a blank tool name would be sent upstream as a declaration the model cannot
+ * call and the caller would see a silent no-op instead of an error.
+ */
+function declaredToolName(declaration) {
+  if (declaration === null || typeof declaration !== 'object') return ''
+  const candidates = [declaration.name, declaration.function?.name]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim()
+  }
   return ''
 }
 
@@ -423,34 +375,56 @@ export function ensureFreeLaneEnvironment(body, style, environment = {}) {
 }
 
 /**
- * Satisfy the v2 free-tier fingerprint on `body`, shaped as the reference
- * gateway shapes it (opencode2api v1.4.6, see the module header):
+ * The request shapes the free tier reads as a conversation-title generator:
+ * no tools declared, one to three turns, no assistant/tool/function turn, and a
+ * title marker in the system or leading text.
  *
- * 1. **官方系统提示注入**：base prompt + `<env>` + skills，逐线注入（Chat 折到
- *    首条 system，Responses 折到 `instructions`，Messages 折到 `system`）；
- *    已带官方标记的请求体原样跳过。
- * 2. **全部调用方工具改名** 为 `clint_<sha256[:12]>`（外来工具词汇一概不上
- *    线——`ReportFindings`/`ScheduleWakeup` 同时出现即 429，2026-10-30 实测）；
- *    Responses 内建与 Messages 服务端工具无客户名，原样保留。
- * 3. **补齐官方 13 工具集**（捕获自官方 CLI 的逐字定义，chat 形状带
- *    `strict: false`，Windows 主机 shell 描述换 powershell）；已带逐字官方
- *    定义的声明视为官方声明，不重命名也不重复补。
- * 4. **引用同步**：`tool_choice`、历史 tool_calls / tool_use / function_call、
- *    Responses 的 `input` 调用行全部跟随改名；字符串 choice 原样透传。
- * 5. **绝不下发 `tool_choice: 'none'`** —— v2 见到它就 403；调用方没给
- *    `tool_choice` 时，只有 Responses 线补 `auto`（官方行为）。
- * 6. Chat 请求体补上官方客户端的两个常量字段：流式时
- *    `stream_options.include_usage: true`；调用方未给上限时
- *    `max_completion_tokens: 32000`。
- *
+ * These bodies must not be shaped, for a measured reason: the free tier answers
+ * an agent-shaped tool list on a toolless title call with 403/429. This lane
+ * injects the full official prompt and 13-tool set on every body, so the
+ * harness's title round-trips used to ship exactly that shape whenever the local
+ * title answer was switched off. A title request now ships as the caller wrote
+ * it — no prompt injection, no tool append, no renames.
+ */
+const TITLE_MARKERS = /generate a title|write a title|create a title|come up with a title|title (?:for|of) (?:this|the) (?:conversation|chat|session|exchange|request)|conversation title|summarize (?:this|the) conversation/i
+
+export function isTitleRequest(body, style) {
+  if (!body || typeof body !== 'object') return false
+  if (body.tool_choice !== undefined || (Array.isArray(body.tools) && body.tools.length)
+    || (Array.isArray(body.functions) && body.functions.length)) return false
+  const shape = shapeOf(style)
+  const rows = shape === 'flat' ? body.input : body.messages
+  if (!Array.isArray(rows)) return false
+  const containsTitle = value => {
+    if (typeof value === 'string') return TITLE_MARKERS.test(value)
+    if (!Array.isArray(value)) return false
+    return TITLE_MARKERS.test(value.map(block => block?.text ?? '').join('\n'))
+  }
+  let matches = containsTitle(shape === 'flat' ? body.instructions : shape === 'claude' ? body.system : '')
+  let count = 0
+  for (const row of rows) {
+    if (!row || typeof row !== 'object' || (shape === 'flat' && typeof row.role !== 'string')) continue
+    if (++count > 3 || !['user', 'system', 'developer'].includes(row.role)) return false
+    matches = containsTitle(row.content) || matches
+  }
+  return count > 0 && matches
+}
+
+/**
+ * Adapt a request to the free-lane wire contract using OFM-authored prompts
+ * and tool schemas. Rename declarations and references together, then restore
+ * names on the response path. Title-only requests keep their original shape.
  * @param {object} body - request body, mutated in place
- * @param {boolean|'claude'} style - true 为 Responses，false 为 Chat，claude 为 Messages
- * @returns {ToolRenameMap} sent name -> caller's name（响应侧还原用；带
- *   {@link ToolRenameMap.resolve} 的折叠还原）
+ * @param {boolean|'claude'} style - Responses, Chat or Messages
+ * @returns {ToolRenameMap} response-name restoration map
  */
 export function applyFingerprint(body, style) {
   const shape = shapeOf(style)
   if (!body || typeof body !== 'object') return new ToolRenameMap()
+
+  // 0. Title requests ship unshaped: an agent-shaped tool list on a toolless
+  // title call is a 403/429 the reference measured (see isTitleRequest).
+  if (isTitleRequest(body, style)) return new ToolRenameMap()
 
   // 1. Official system prompt (the reference injects before shaping tools).
   injectOfficialPrompt(body, shape)
@@ -466,7 +440,7 @@ export function applyFingerprint(body, style) {
       keep.add(name)
     }
   }
-  const { renames, injected } = renameAndCompleteTools(body, shape, { keep })
+  const { renames, injected } = shapeToolSurface(body, shape, { keep })
 
   // 4b. The injected officials need the placeholder note.
   if (injected.length > 0) noteInjectedTools(body, shape, injected)
@@ -496,7 +470,7 @@ export function restoreToolName(name, map) {
 export function declaredToolNames(body) {
   const names = new Set()
   for (const tool of Array.isArray(body.tools) ? body.tools : []) {
-    const n = toolNameOf(tool)
+    const n = declaredToolName(tool)
     if (n) names.add(n)
   }
   return names

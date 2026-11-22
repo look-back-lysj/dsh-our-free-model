@@ -23,6 +23,7 @@ import { registerHooks, stripTypeScriptTypes } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { CLIENT_TOOL_PREFIX, clientToolWireName } from '../src/o2a/tool-renames.js'
 import { V2_OFFICIAL_TOOL_ORDER } from '../src/o2a/official-tools.js'
+import * as officialTools from '../src/o2a/official-tools.js'
 
 /** Order-insensitive stringify: the two copies render schemas in their own key orders. */
 const canonical = value => JSON.stringify(value, (key, val) => (val && typeof val === 'object' && !Array.isArray(val) ? Object.fromEntries(Object.entries(val).sort()) : val))
@@ -77,20 +78,38 @@ try {
   check('the lane declares the full official set', V2_OFFICIAL_TOOL_ORDER.every(name => laneTools.some(tool => tool.name === name)), true)
   check('the lane declares the pack’s gate names', ['read', 'shell'].every(name => laneTools.some(tool => tool.name === name)), true)
 
-  console.log('\n=== 2. the injected definitions are identical, verbatim ===')
+  console.log('\n=== 2. both copies carry the upstream definitions verbatim ===')
+  // This used to assert that the lane's prose matched a hand-authored rewrite of
+  // the official descriptions, on the theory that only the argument shape
+  // mattered. That theory was wrong: the free tier compares the description and
+  // the parameter schema character for character, and a rewritten description is
+  // answered with 429 FreeUsageLimitError rather than a shape error — which is
+  // why this check now pins the verbatim upstream text on both sides.
+  const contracts = JSON.parse(fs.readFileSync(new URL('../src/o2a/assets/ofm-tool-contracts.json', import.meta.url), 'utf8'))
   for (const name of ['read', 'shell']) {
     const lane = laneTools.find(tool => tool.name === name)
     const pack = packTools.find(tool => tool.name === name)
-    // The shell description names the shell the host actually has: the
-    // reference (and this lane) rewrites bash → powershell on a Windows host,
-    // where the pack keeps the captured Unix wording.
-    const sameDescription = name === 'shell' && process.platform === 'win32'
-      ? lane.description === pack.description.replace('on Linux using bash', 'on Windows using powershell')
-      : pack.description === lane.description
-    check(`${name}: description`, sameDescription, true)
-    // The gate compares definitions semantically; the two copies render their
-    // schemas in their own key orders, so compare order-insensitively.
-    check(`${name}: parameters`, canonical(pack.parameters), canonical(lane.parameters))
+    // The `shell` description is a template: the client fills `${OS}`/`${shell}`
+    // for the machine it runs on, and so does the lane.
+    const expected = name === 'shell' ? officialTools.v2ShellDescription(contracts[name].description) : contracts[name].description
+    check(`${name}: lane description is the upstream text`, lane.description, expected)
+    // The pack still carries the pre-2.2.x wording, which hard-codes Linux/bash.
+    // The lane renders the platform template instead, so on a non-Linux host the
+    // two legitimately differ — compare them only where they describe the same
+    // machine, and otherwise just require that the pack's is the Linux rendering.
+    if (process.platform === 'linux') {
+      check(`${name}: lane description equals the pack's`, lane.description, pack.description)
+    } else if (name === 'shell') {
+      check(`${name}: the pack still carries the Linux wording`, pack.description, officialTools.v2ShellDescription(contracts[name].description, 'linux'))
+    } else {
+      check(`${name}: lane description equals the pack's`, lane.description, pack.description)
+    }
+    check(`${name}: parameters match the upstream schema`, canonical(lane.parameters), canonical(contracts[name].parameters))
+    check(`${name}: parameters match the pack's`, canonical(lane.parameters), canonical(pack.parameters))
+    // A parameter description is part of the fingerprint, so it must survive.
+    for (const key of Object.keys(contracts[name].parameters.properties)) {
+      check(`${name}.${key}: keeps its parameter description`, typeof lane.parameters.properties[key].description, 'string')
+    }
   }
 
   console.log('\n=== 3. the User-Agent is the canonical v2 shape on both sides ===')
@@ -123,14 +142,22 @@ try {
   check('both carry a positive context window', [free.get('deepseek-v4.1-flash-free').contextWindow > 0, free.get('glm-5.3-flash-free').contextWindow > 0], [true, true])
 
   console.log('\n=== 6. a caller tool on a gate name moves aside on both sides ===')
-  // The lane renames every client tool opaquely (the o2a port); the pack keeps
-  // the read_client alias it verified live. Both must restore the caller's name.
+  // The lane reserves an official name for the official definition: a caller
+  // `read` takes an opaque handle and the official `read` is appended verbatim.
+  // A caller schema at the official name is what the upstream answers with 429
+  // (measured 2026-11-22 against DSH's own `bash` tool).
+  // The pack keeps the read_client alias it verified live — the pack's
+  // OpenCode lane is disabled in this product, so its older contract stays
+  // pinned as-is. Both must keep the official name singular and restorable.
   const conflict = { type: 'function', function: { name: 'read', description: 'the caller read', parameters: { type: 'object', properties: { x: { type: 'string' } } } } }
   const laneConflict = { tools: [conflict] }
   const laneMap = up.applyFingerprint(laneConflict, false)
   const laneWire = clientToolWireName('read')
-  check('the lane renames it opaquely', laneConflict.tools.some(tool => tool.function.name === laneWire), true)
-  check('the lane restores it', up.restoreToolName(laneWire, laneMap), 'read')
+  check('the lane moves the caller read to a handle', laneConflict.tools.filter(tool => tool.function.name === laneWire).length, 1)
+  check('the lane declares the official read once', laneConflict.tools.filter(tool => tool.function.name === 'read').length, 1)
+  check('the official read keeps the official schema', laneConflict.tools.find(tool => tool.function.name === 'read').function.parameters.required, ['path'])
+  check('the handle keeps the caller schema', laneConflict.tools.find(tool => tool.function.name === laneWire).function.parameters.properties.x, { type: 'string' })
+  check('the lane restores the caller spelling', up.restoreToolName(laneWire, laneMap), 'read')
   const packConflict = messages.buildOpencodePayloadWithToolMap({ model: 'big-pickle', messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'read', description: 'the caller read', parameters: { type: 'object', properties: { x: { type: 'string' } } } }] })
   check('the pack aliases it', packConflict.toolNameMap.get('read_client'), 'read')
   check('the pack keeps one official read', packConflict.payload.tools.filter(tool => tool.function?.name === 'read').length, 1)
@@ -139,7 +166,7 @@ try {
   // list: the model reads its own earlier `read` call as a call to the official
   // tool of that name otherwise, and the two definitions disagree. Both sides
   // must rewrite the same rows — this is the drift the suite exists to catch.
-  console.log('\n=== 6b. an aliased tool is renamed in the history on both sides ===')
+  console.log('\n=== 6b. an aliased tool keeps its history consistent on both sides ===')
   const history = [
     { role: 'user', content: 'do it' },
     { role: 'assistant', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read', arguments: '{}' } }] },
@@ -148,11 +175,13 @@ try {
   const laneHistory = { tools: [conflict], messages: JSON.parse(JSON.stringify(history)) }
   up.applyFingerprint(laneHistory, false)
   const laneName = laneHistory.messages.find(message => Array.isArray(message.tool_calls))?.tool_calls?.[0]?.function?.name
-  check('the lane rewrites the prior call', laneName, clientToolWireName('read'))
+  // The lane's handle is the caller's wire name, so the prior call follows it.
+  check('the lane keeps the prior call on the handle', laneName, laneWire)
+  check('the lane keeps the result paired', laneHistory.messages.filter(message => message.role === 'tool').length, 1)
   const packHistory = messages.buildOpencodePayloadWithToolMap({ model: 'big-pickle', messages: JSON.parse(JSON.stringify(history)), tools: [{ name: 'read', description: 'the caller read', parameters: { type: 'object', properties: { x: { type: 'string' } } } }] })
   const packName = packHistory.payload.messages.find(message => Array.isArray(message.tool_calls))?.tool_calls?.[0]?.function?.name
   check('the pack rewrites the prior call', packName, 'read_client')
-  check('both sides rewrite the prior call away from the gate name', [packName === 'read_client', laneName === clientToolWireName('read')], [true, true])
+  check('both sides keep history off the conflicting spelling', [packName === 'read_client', laneName === laneWire], [true, true])
 
   console.log('\n=== 7. neither side sends tool_choice none ===')
   const laneNone = { tools: [], tool_choice: 'none' }

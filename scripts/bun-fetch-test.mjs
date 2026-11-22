@@ -181,6 +181,37 @@ try {
       }
     }
   });
+  await test('detection prefers OUR_FREE_MODEL_BUN and finds the standard ~/.bun/bin install', async () => {
+    const keys = ['OUR_FREE_MODEL_BUN', 'BUN_INSTALL', 'APPDATA', 'PATH', 'USERPROFILE', 'HOME'];
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-bun-detect-'));
+    const name = process.platform === 'win32' ? 'bun.exe' : 'bun';
+    try {
+      const home = path.join(scratch, 'home');
+      const standard = path.join(home, '.bun', 'bin', name);
+      fs.mkdirSync(path.dirname(standard), { recursive: true });
+      fs.writeFileSync(standard, '');
+      if (process.platform !== 'win32') fs.chmodSync(standard, 0o755);
+      process.env.USERPROFILE = home;
+      process.env.HOME = home;
+      delete process.env.OUR_FREE_MODEL_BUN;
+      delete process.env.BUN_INSTALL;
+      delete process.env.APPDATA;
+      process.env.PATH = '';
+      assert.equal(findBunExecutable(), path.resolve(standard));
+      // The explicit override remains the highest-priority candidate.
+      process.env.OUR_FREE_MODEL_BUN = process.execPath;
+      assert.equal(findBunExecutable(), path.resolve(process.execPath));
+      // A stale or mistyped override is skipped, not fatal.
+      process.env.OUR_FREE_MODEL_BUN = path.join(scratch, 'missing', name);
+      assert.equal(findBunExecutable(), path.resolve(standard));
+    } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+      }
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
   const bun = findBunExecutable();
   if (bun) {
     await test('native Bun loopback byte and streaming verification', async () => {

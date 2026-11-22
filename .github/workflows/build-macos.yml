@@ -109,7 +109,16 @@ jobs:
             echo "- 构建记录 / CI run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo "- SHA256: $sha"
           } >> release-notes.md
+          # `--latest=false` is load-bearing. This release is a community build of
+          # one architecture, not the product's latest release: without the flag
+          # GitHub marks whichever release was *created* last as `/releases/latest`,
+          # and this job finishes a couple of minutes after the tag build that
+          # carries the plugin tarball and the Windows installer. Measured
+          # 2026-11-22 on v2.9.0: `/releases/latest` answered
+          # `v2.9.0-macos-unofficial`, so anyone following "latest release" landed
+          # on a page holding a single .dmg and none of the Windows assets.
           gh release create "$release_tag" "$dmg" \
             --title "${version} macOS (${arch}) — 非官方社区构建 / unofficial community build" \
             --notes-file release-notes.md \
+            --latest=false \
             --target "$GITHUB_SHA" || gh release upload "$release_tag" "$dmg" --clobber

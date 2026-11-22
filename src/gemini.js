@@ -6,7 +6,7 @@
  */
 import crypto from 'node:crypto'
 import { foldAnthropicOutcome, countTokens } from './anthropic.js'
-import { forwardFailure } from './failure.js'
+import { forwardFailure } from './http.js'
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const invalid = message => { throw Object.assign(new Error(message), { statusCode: 400 }) }

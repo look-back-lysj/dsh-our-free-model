@@ -84,15 +84,26 @@ console.log('\n=== 2. the four v2 session headers, and no v1-only request header
   // v1 sent `x-opencode-request`; v2 answers that header with 403 FreeTierError.
   check('no x-opencode-request', 'x-opencode-request' in headers, false)
   check('the User-Agent is the canonical v2 token', headers['user-agent'], up.CLIENT_UA)
-  // The reference sends no accept header at all on the v2 lane (captured from
-  // its outbound bytes, 2026-10-31); the body's stream flag drives SSE.
-  check('no accept header on the v2 lane', 'accept' in headers, false)
+  // The official 2.2.3 client answers with its fetch stack's wildcard accept
+  // (issue #708's HTTP-Toolkit trace); the reference's Go client omitting the
+  // header described the reference, not the official client.
+  check('the v2 lane answers with the official wildcard accept', headers.accept, '*/*')
   check('an explicit accept override still ships', up.gatewayHeaders({ session, accept: 'application/json' }).accept, 'application/json')
-  // v1.4.6: the project id is a bare 40-hex id, fresh per request when the
-  // caller names no project — the shared `global` bucket arrived pre-burned.
+  check('accept can be omitted explicitly', 'accept' in up.gatewayHeaders({ session, accept: null }), false)
+  // The official client carries a W3C trace pair on every request; the pair is
+  // fresh per request, and both spellings share one trace/span id pair.
+  const trace = headers.traceparent
+  check('traceparent rides every request', /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/.test(trace), true)
+  check('b3 carries the same ids', headers.b3, `${trace.slice(3, 35)}-${trace.slice(36, 52)}-1-${headers.b3.split('-')[3]}`)
+  check('the next request mints a fresh trace', up.gatewayHeaders({ session, stream: true }).traceparent !== trace, true)
+  // v1.4.6: the project id is a bare 40-hex id. Since our PR #757 port, the
+  // default derives from the session — one conversation, one quota bucket —
+  // instead of the reference's per-request mint (a proxy-pool spread that
+  // scatters a single-IP client's usage across uncorrelated identities).
   const project = headers['x-opencode-project']
   check('the project id is a bare 40-hex id', /^[0-9a-f]{40}$/.test(project), true)
-  check('a second request mints a fresh project id', up.gatewayHeaders({ session, stream: true })['x-opencode-project'] !== project, true)
+  check('a second request keeps the conversation project stable', up.gatewayHeaders({ session, stream: true })['x-opencode-project'] === project, true)
+  check('a different session derives a different project', up.gatewayHeaders({ session: `${session}x` })['x-opencode-project'] !== project, true)
   check('a caller project of `global` passes through', up.gatewayHeaders({ session, project: 'global' })['x-opencode-project'], 'global')
 }
 
@@ -137,15 +148,21 @@ console.log('\n=== 4. the v2 tool gate: read + shell, official definitions, no t
   up.applyFingerprint(claude, 'claude')
   check('Messages shape uses input_schema', declared(claude, 'read').input_schema.required, ['path'])
 
-  // A caller tool that reuses a gate name with another definition moves aside,
-  // and the response side still restores the caller's own spelling.
+  // A caller tool that reuses a gate name with another definition takes an
+  // opaque handle; the official definition keeps the official name. A caller
+  // schema at the official name is what the upstream answers with 429
+  // (measured 2026-11-22 against DSH's own `bash` tool).
   const caller = { tools: [{ type: 'function', function: { name: 'read', description: 'the caller read', parameters: { type: 'object', properties: {} } } }] }
   const map = up.applyFingerprint(caller, false)
-  check('only one declaration carries the gate name', caller.tools.filter(tool => tool.function.name === 'read').length, 1)
-  check('…and it is the official definition', declared(caller, 'read').function.parameters.required, ['path'])
-  const callerWire = clientToolWireName('read')
-  check('the caller declaration survived under its opaque wire name', caller.tools.find(tool => tool.function.name === callerWire).function.description, 'the caller read')
-  check('…and the wire name restores the caller name', up.restoreToolName(callerWire, map), 'read')
+  const handle = clientToolWireName('read')
+  check('the caller read takes a handle', caller.tools.filter(tool => tool.function.name === handle).length, 1)
+  check('the official read is declared once', caller.tools.filter(tool => tool.function.name === 'read').length, 1)
+  check('the official read keeps the official definition', declared(caller, 'read').function.parameters.required, ['path'])
+  // The caller's words survive on its own handle; only the ASCII spaces become
+  // NBSP, which is what stops a literal phrase in a caller description matching
+  // an upstream rule.
+  check('…and the caller handle keeps the caller words', caller.tools.find(tool => tool.function.name === handle).function.description, 'the\u00a0caller\u00a0read')
+  check('…and the wire name restores the caller name', up.restoreToolName(handle, map), 'read')
 }
 
 console.log('\n=== 5. the User-Agent is the canonical v2 token, whatever the host attributes ===')
@@ -263,7 +280,11 @@ console.log('\n=== 8. 空闲时钟只由真数据上弦，不被 keepalive 注�
   const pinging = (async function* () {
     const stopAt = Date.now() + 800
     while (Date.now() < stopAt) {
-      await new Promise(resolve => setTimeout(resolve, 40))
+      // Pacing is deliberately wide of the idle budget below (6.7x margin):
+      // the contract under test is "comments do not renew the clock", not
+      // these exact milliseconds, and a 40/120 pairing flaked when the whole
+      // marathon suite ran on a loaded machine.
+      await new Promise(resolve => setTimeout(resolve, 60))
       yield Buffer.from(': keepalive\n')
     }
     await new Promise(() => {}) // wedged: no data, no close
@@ -271,17 +292,17 @@ console.log('\n=== 8. 空闲时钟只由真数据上弦，不被 keepalive 注�
   const startedPing = Date.now()
   let pingCode = null
   try {
-    await readSse(pinging, () => {}, undefined, 120)
+    await readSse(pinging, () => {}, undefined, 400)
   } catch (error) { pingCode = error?.code }
   const pingElapsed = Date.now() - startedPing
   check('a keepalive-only stream times out', pingCode, CODE.timeout)
-  check(`…at its own deadline (${pingElapsed}ms), not after the pings stop`, pingElapsed < 500, true)
+  check(`…at its own deadline (${pingElapsed}ms), not after the pings stop`, pingElapsed < 700, true)
 
   // The counterweight: real payloads must still wind the clock, or a slow lane
   // that trickles tokens would be killed mid-answer.
   const trickle = (async function* () {
     for (let i = 0; i < 8; i++) {
-      await new Promise(resolve => setTimeout(resolve, 40))
+      await new Promise(resolve => setTimeout(resolve, 60))
       yield Buffer.from(`data: {"n":${i}}\n\n`)
     }
     await new Promise(() => {})
@@ -289,7 +310,7 @@ console.log('\n=== 8. 空闲时钟只由真数据上弦，不被 keepalive 注�
   const trickled = []
   let trickleCode = null
   try {
-    await readSse(trickle, payload => trickled.push(payload), undefined, 120)
+    await readSse(trickle, payload => trickled.push(payload), undefined, 400)
   } catch (error) { trickleCode = error?.code }
   check('a stream that keeps sending payloads is not idle', trickled.length, 8)
   check('…and only ends after the payloads stop', trickleCode, CODE.timeout)
@@ -300,14 +321,14 @@ console.log('\n=== 8. 空闲时钟只由真数据上弦，不被 keepalive 注�
   const document = JSON.stringify({ choices: [{ message: { content: 'raw' } }] })
   const rawChunks = (async function* () {
     for (let at = 0; at < document.length; at += 4) {
-      await new Promise(resolve => setTimeout(resolve, 40))
+      await new Promise(resolve => setTimeout(resolve, 60))
       yield Buffer.from(document.slice(at, at + 4))
     }
   })()
   const rawSeen = []
   let rawCode = null
   try {
-    await readSse(rawChunks, payload => rawSeen.push(payload), undefined, 120)
+    await readSse(rawChunks, payload => rawSeen.push(payload), undefined, 400)
   } catch (error) { rawCode = error?.code }
   check('a raw-JSON body without newlines still counts as progress', rawCode, null)
   check('…and is dispatched once complete', rawSeen.length, 1)

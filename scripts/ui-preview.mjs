@@ -35,10 +35,23 @@ import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { createRequire } from 'node:module'
 import { execSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { callRoute, chatFrames, fakeContext, freePort, stubUpstream, until } from './lib/fake-kernel.mjs'
+
+/* Closing a browser context can cut a keep-alive socket under an in-flight
+   loopback request (seen as a bare ECONNRESET "socket hang up" on a
+   ClientRequest with nobody left listening). Callers that do listen still hear
+   their own 'error'; the fallback only stops the stray one from killing the
+   whole run between batches. */
+const rawRequest = http.request.bind(http)
+http.request = (...args) => {
+  const request = rawRequest(...args)
+  request.once('error', () => {})
+  return request
+}
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const OUT_DIR = path.join(ROOT, '.verify', 'ui-preview')
@@ -56,7 +69,7 @@ const BIG_DIFF = [
   '',
 ].join('\n')
 
-const TABS = ['free', 'eac', 'channels', 'aggregate', 'saver', 'routing', 'ledger', 'logs', 'gateway', 'upgrade', 'picks']
+const TABS = ['free', 'eac', 'channels', 'aggregate', 'workspace', 'extensions', 'saver', 'routing', 'ledger', 'logs', 'gateway', 'upgrade', 'picks']
 
 // ── module resolution ────────────────────────────────────────────────────────
 /**
@@ -286,6 +299,95 @@ pickStub.unref()
 process.env.OFM_PICKS_API_BASE = `http://127.0.0.1:${pickStub.address().port}`
 say(`pick-stats stub at ${process.env.OFM_PICKS_API_BASE}`)
 
+// The extension marketplace gets the same treatment as the feed and the picks:
+// a loopback registry built from the sibling `ofm-extensions` checkout, so the
+// screenshots and the install flow render against the real packages while the
+// run still reads nothing from the internet. Entries are re-signed with an
+// ephemeral key (the runtime pins its public half) and each `main.url` points at
+// this server; digests come from the local files, so an install verifies. The
+// fake-kernel import has already pinned a dead port by the time this runs, so
+// when the sibling checkout exists the fixture replaces that pin outright.
+const extensionRepo = path.join(ROOT, '..', 'ofm-extensions')
+const extensionRegistryPath = path.join(extensionRepo, 'registry.json')
+if (fs.existsSync(extensionRegistryPath)) {
+  const { stableStringify } = await import('../src/updater.js')
+  const registryPayload = JSON.parse(fs.readFileSync(extensionRegistryPath, 'utf8'))
+  const extensionPackages = new Map()
+  let fixtureUsable = Array.isArray(registryPayload.plugins) && registryPayload.plugins.length > 0
+  for (const entry of registryPayload.plugins ?? []) {
+    const sourcePath = path.join(extensionRepo, 'packages', entry.id, 'main.mjs')
+    if (!fs.existsSync(sourcePath)) { fixtureUsable = false; break }
+    const source = fs.readFileSync(sourcePath, 'utf8')
+    extensionPackages.set(entry.id, source)
+    entry.main = {
+      url: '', // the port is known only once the server listens; patched below
+      size: Buffer.byteLength(source),
+      sha256: crypto.createHash('sha256').update(source).digest('hex'),
+    }
+    // Covers ride the same rewrite: the registry's signed digest is checked
+    // against the local file, and the URL moves to this server.
+    if (entry.cover !== null && typeof entry.cover === 'object') {
+      const coverName = entry.cover.url.split('/').pop().split('?')[0]
+      const coverPath = path.join(extensionRepo, 'packages', entry.id, coverName)
+      if (fs.existsSync(coverPath)) {
+        const bytes = fs.readFileSync(coverPath)
+        extensionPackages.set(`${entry.id}/${coverName}`, bytes)
+        entry.cover = {
+          url: '', // patched below
+          size: bytes.length,
+          sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+        }
+        entry.coverName = coverName
+      } else delete entry.cover
+    }
+  }
+  if (fixtureUsable) {
+    const extensionBase = `http://127.0.0.1:${await freePort()}`
+    for (const entry of registryPayload.plugins) {
+      entry.main.url = `${extensionBase}/packages/${entry.id}/main.mjs`
+      if (entry.cover !== undefined) {
+        entry.cover.url = `${extensionBase}/packages/${entry.id}/${entry.coverName}`
+      }
+      delete entry.coverName
+    }
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519')
+    const extensionSignature = crypto.sign(null, Buffer.from(stableStringify(registryPayload)), privateKey)
+      .toString('base64')
+    const extensionServer = http.createServer((req, res) => {
+      const url = new URL(String(req.url ?? ''), 'http://x')
+      if (url.pathname === '/registry.json') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(registryPayload))
+        return
+      }
+      if (url.pathname === '/registry.sig') {
+        res.writeHead(200, { 'content-type': 'text/plain' })
+        res.end(extensionSignature)
+        return
+      }
+      const match = /\/packages\/([\w-]+)\/main\.mjs/.exec(url.pathname)
+      if (match !== null && extensionPackages.has(match[1])) {
+        res.writeHead(200, { 'content-type': 'text/javascript' })
+        res.end(extensionPackages.get(match[1]))
+        return
+      }
+      const coverMatch = /\/packages\/([\w-]+)\/([\w.-]+)$/.exec(url.pathname)
+      if (coverMatch !== null && extensionPackages.has(`${coverMatch[1]}/${coverMatch[2]}`)) {
+        const bytes = extensionPackages.get(`${coverMatch[1]}/${coverMatch[2]}`)
+        res.writeHead(200, { 'content-type': coverMatch[2].endsWith('.svg') ? 'image/svg+xml' : 'application/octet-stream' })
+        res.end(bytes)
+        return
+      }
+      res.writeHead(404).end()
+    })
+    await new Promise(resolve => extensionServer.listen(new URL(extensionBase).port, '127.0.0.1', resolve))
+    extensionServer.unref()
+    process.env.OFM_EXTENSIONS_REGISTRY = `${extensionBase}/registry.json`
+    process.env.OFM_EXTENSIONS_PUBLIC_KEY = publicKey.export({ format: 'der', type: 'spki' }).toString('base64')
+    say(`extension registry fixture at ${process.env.OFM_EXTENSIONS_REGISTRY} (${registryPayload.plugins.length} entries)`)
+  }
+}
+
 const { apply, inject } = await import(pathToFileURL(path.join(ROOT, 'index.js')).href)
 const routes = []
 const ctx = fakeContext({ inject, mounted: ['llm', 'webServer', 'timer', 'connection', 'attachments'], onRegister: route => routes.push(route) })
@@ -377,7 +479,7 @@ function bundleReact() {
     parts.push('\n};')
   }
   parts.push('function __r(id){if(__m[id]===undefined)throw new Error("the preview react bundle has no module \\""+id+"\\"");if(__c[id])return __c[id].exports;var m={exports:{}};__c[id]=m;__m[id].call(m.exports,m,m.exports,__r,{env:{NODE_ENV:"production"}},globalThis);return m.exports}')
-  parts.push('window.__previewReact=__r("react");window.__previewReactDOMClient=__r("react-dom/client");')
+  parts.push('window.__previewReact=__r("react");window.__previewReactDOMClient=__r("react-dom/client");window.__previewReactDOM=__r("react-dom");')
   parts.push('})();')
   return parts.join('\n')
 }
@@ -508,6 +610,25 @@ async function shoot({ variant, width, height, scale, dark = false, locale = 'zh
   const labels = await page.$$eval('.ofm_tabs .ofm_tab', nodes => nodes.map(node => node.textContent.replace(/\s+/g, ' ').trim()))
   if (labels.length !== TABS.length) problems.push(`${variant}: the tab strip has ${labels.length} tabs, expected ${TABS.length} (${labels.join(' | ')})`)
 
+  // The first visit opens the disclaimer dialog over the whole page, so every
+  // click below lands on the scrim and times out — the harness then reports
+  // "could not be driven" for all thirteen tabs while the page is perfectly
+  // fine. Photograph a returning user: acknowledge once (the ack persists in
+  // the plugin's settings, so the later variants see no dialog at all) and wait
+  // for the scrim to leave the DOM before clicking anything.
+  const dialog = page.locator('.ofm_disclaimer')
+  try {
+    await dialog.first().waitFor({ state: 'visible', timeout: 5000 })
+  } catch { /* no dialog: a previous variant already acknowledged it */ }
+  if (await dialog.count() > 0) {
+    try {
+      await page.locator('.ofm_disclaimer .ofm_btn.primary').first().click({ timeout: 15000 })
+      await dialog.first().waitFor({ state: 'detached', timeout: 15000 })
+    } catch (error) {
+      problems.push(`${variant}: the first-visit disclaimer could not be dismissed — ${String(error?.message ?? error).split('\n')[0]}`)
+    }
+  }
+
   for (const entry of shots) {
     // One shot failing (a control that never appeared, a selector that matches
     // nothing) must not cost the rest of the run its screenshots.
@@ -525,12 +646,17 @@ async function shoot({ variant, width, height, scale, dark = false, locale = 'zh
       await page.waitForTimeout(900)
     } catch (error) {
       problems.push(`${variant}/${entry.file}: the shot could not be driven — ${String(error?.message ?? error).split('\n')[0]}`)
-      say(`[${variant}] ${entry.tab ?? entry.label} — could not be driven: ${String(error?.message ?? error).split('\n')[0]}`)
+      say(`[${variant}] ${entry.tab ?? entry.label} — could not be driven: ${String(error?.message ?? error).split('\n')[0]}; page errors: ${(pageErrors || []).join(' || ').slice(0, 500) || '(none)'}`)
       continue
     }
     const measured = await measure(page)
     if (entry.selector === undefined) await page.screenshot({ path: path.join(OUT_DIR, entry.file), fullPage: true })
     else await page.locator(entry.selector).first().screenshot({ path: path.join(OUT_DIR, entry.file) })
+    // A shot that opened an overlay leaves it open; the next shot's tab click
+    // would otherwise land on the scrim and time out.
+    try { if (entry.after !== undefined) await entry.after(page) } catch (error) {
+      problems.push(`${variant}/${entry.file}: the after-hook failed — ${String(error?.message ?? error).split('\n')[0]}`)
+    }
     const line = {
       variant, file: entry.file, tab: entry.tab ?? entry.label ?? '—',
       crashed: measured.crashed, pageChars: measured.pageChars, rootChars: measured.rootChars,
@@ -709,6 +835,7 @@ await shoot({
     { tab: 'saver', file: 'saver-narrow.png' },
     { tab: 'routing', file: 'routing-narrow.png' },
     { tab: 'gateway', file: 'gateway-narrow.png' },
+    { tab: 'extensions', file: 'extensions-narrow.png' },
   ],
 })
 
@@ -730,6 +857,33 @@ await shoot({
         await page.getByRole('button', { name: '编辑', exact: true }).first().click()
         await page.getByRole('button', { name: '添加成员', exact: true }).first().click()
       },
+    },
+    {
+      tab: 'extensions', label: 'extensions+detail', file: 'extensions-detail.png',
+      before: async page => { await page.getByRole('button', { name: '详情', exact: true }).first().click() },
+      after: async page => { await page.keyboard.press('Escape') },
+    },
+    {
+      // The enhancement detail: the declared hooks render as chips.
+      tab: 'extensions', label: 'extensions+detail+hooks', file: 'extensions-detail-hooks.png',
+      before: async page => {
+        await page.locator('.ofm_extcard').filter({ hasText: 'model-filter' }).getByRole('button', { name: '详情', exact: true }).click()
+      },
+      after: async page => { await page.keyboard.press('Escape') },
+    },
+    {
+      // The lane-takeover badge, in the drawer that decides the install.
+      tab: 'extensions', label: 'extensions+detail+replaces', file: 'extensions-detail-kilo.png',
+      before: async page => {
+        await page.locator('.ofm_extcard').filter({ hasText: 'kilo-free' }).getByRole('button', { name: '详情', exact: true }).click()
+      },
+      after: async page => { await page.keyboard.press('Escape') },
+    },
+    {
+      // Tag browsing last: it filters the grid, and the state would linger into
+      // any shot that follows it on this tab.
+      tab: 'extensions', label: 'extensions+tagfilter', file: 'extensions-tagfilter.png',
+      before: async page => { await page.locator('.ofm_tagbtn').first().click() },
     },
   ],
 })
@@ -755,6 +909,7 @@ await shoot({
     { tab: 'aggregate', file: 'aggregate-dark.png' },
     { tab: 'saver', file: 'saver-dark.png' },
     { tab: 'routing', file: 'routing-dark.png' },
+    { tab: 'extensions', file: 'extensions-dark.png' },
     { tab: 'picks', file: 'picks-dark.png' },
   ],
 })
@@ -804,13 +959,27 @@ async function interactionPass() {
 }
 
 // ── wrap up ──────────────────────────────────────────────────────────────────
+if (process.env.OFM_PREVIEW_HOLD === '1') {
+  // Manual-inspection mode: keep the mounted shell serving and let a human (or
+  // a second browser) look at it — for the machines where the bundled
+  // playwright/chromium pair cannot drive a click at all.
+  say(`holding the preview open at ${origin} until interrupted (OFM_PREVIEW_HOLD=1)`)
+  await new Promise(() => {})
+}
 await browser.close()
 server.close()
 for (const dispose of ctx.__disposers ?? []) { try { dispose() } catch { /* teardown is best effort */ } }
 freeLane.close()
 feedServer.close()
 aggregateServer.close()
-fs.rmSync(home, { recursive: true, force: true })
+// Windows keeps a handle on the scratch home for a beat after the browser and
+// the extension workers let go; a locked temp dir must not fail an otherwise
+// green run (the OS clears it on its own).
+try {
+  fs.rmSync(home, { recursive: true, force: true })
+} catch (error) {
+  say(`cleanup: the scratch home stayed locked (${String(error?.code ?? error?.message ?? error)}); leaving ${home} for the OS`)
+}
 
 say('')
 say(`${report.length} screenshots in ${OUT_DIR}`)
@@ -862,7 +1031,7 @@ window.__ModuleLoader__ = {
     try {
       window.__plugin = record.factory(name => {
         if (name === 'react') return window.__previewReact
-        if (name === 'react-dom') return window.__previewReactDOMClient
+        if (name === 'react-dom') return window.__previewReactDOM
         if (name === 'react-dom/client') return window.__previewReactDOMClient
         throw new Error('the preview shell provides no module "' + name + '"')
       })
