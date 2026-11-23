@@ -8,7 +8,7 @@ import { reportLedgerAccount } from './token-ledger.js'
 interface QueueOptions {
   accountPool?: AccountPool
   resolveCredential?: (model?: string) => Promise<unknown>
-  refresh?: (accountId?: string, reason?: 'auth') => Promise<unknown>
+  refresh?: (accountId?: string, reason?: 'auth', signal?: AbortSignal) => Promise<unknown>
   currentAccountId?: () => string | undefined
   nextAccount?: (model: string, tried: ReadonlySet<string>) => Promise<{ accountId: string; credential: unknown } | undefined>
   identitySlots?: (model?: string) => Promise<readonly IdentitySlot[]>
@@ -137,7 +137,7 @@ export function withQueueAccountRotation<O extends QueueOptions, A extends objec
     }
   }
   if (options.refresh !== undefined) {
-    scoped.refresh = async (accountId, reason) => {
+    scoped.refresh = async (accountId, reason, signal) => {
       const request = active()
       const id = accountId ?? request?.account?.entry.id
       if (request !== undefined) {
@@ -146,7 +146,9 @@ export function withQueueAccountRotation<O extends QueueOptions, A extends objec
         if (budget.has(id)) throw new LlmError(`${provider}: 当前账号已尝试${reason === 'auth' ? '认证续期' : '凭据刷新'}，停止重复刷新`, 'AUTH')
         budget.add(id)
       }
-      return options.refresh!(id, reason)
+      return signal === undefined
+        ? options.refresh!(id, reason)
+        : options.refresh!(id, reason, signal)
     }
   }
   if (options.identitySlots !== undefined) {

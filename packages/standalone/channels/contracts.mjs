@@ -23,6 +23,9 @@ export class LlmError extends Error {
     super(message, options)
     this.name = 'LlmError'
     this.code = code
+    // `failure` is the host's structured verdict: the release tooling reads
+    // status and providerRetryAfterMs from it, not from the error itself.
+    if (options !== undefined) this.failure = options
   }
 }
 export const credentialRef = value => value

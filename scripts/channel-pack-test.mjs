@@ -24,7 +24,18 @@ const sourceRoot = new URL('../vendor/channel-pack/src/', import.meta.url).href
 const llmKernel = `data:text/javascript,${encodeURIComponent(`
 export * from ${JSON.stringify(kernel)}
 export class LlmError extends Error {
-  constructor(message, code, options) { super(message, options); this.code = code; this.status = options?.status }
+  constructor(message, code, options) {
+    super(message, options)
+    this.code = code
+    this.status = options?.status
+    // 与真实 dsh-llm 的 LlmError 对齐：渠道适配器会从 failure 上读
+    // providerRetryAfterMs（429 的 Retry-After 冷却时长）。
+    this.failure = Object.freeze({
+      message, code,
+      ...(options?.status === undefined ? {} : { status: options.status }),
+      ...(options?.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: options.providerRetryAfterMs }),
+    })
+  }
 }
 let nextMessage = 0
 export function createUserMessage(value) { return { id: 'fixture-message-' + ++nextMessage, ...value } }
@@ -981,6 +992,18 @@ async function verifySourceRegressions({ ctx, adapters, call, creds }) {
         return true
       })
     }
+    await ctx.accountPool.clearModelRateLimits('audit-raccoon-a')
+    await ctx.accountPool.clearModelRateLimits('audit-raccoon-b')
+    const shortCooldown = Date.now() + 20_000
+    await ctx.accountPool.updateModelRateLimit('audit-raccoon-a', options.model, shortCooldown)
+    await ctx.accountPool.updateModelRateLimit('audit-raccoon-b', options.model, shortCooldown)
+    await assert.rejects(collect(adapters.get('raccoon').stream({ ...options, provider: 'raccoon' })), error => {
+      assert.equal(error.code, 'RATE_LIMIT', 'a short cooldown stays retryable')
+      assert.equal(error.failure?.status, 429)
+      assert.ok(error.failure?.providerRetryAfterMs > 0 && error.failure.providerRetryAfterMs <= 20_000)
+      assert.match(error.message, /短时限流/)
+      return true
+    })
     await ctx.accountPool.clearModelRateLimits('audit-raccoon-b')
     const refreshes = [], sends = []
     auditFetch = async (input, init) => {
@@ -1038,6 +1061,190 @@ async function verifySourceRegressions({ ctx, adapters, call, creds }) {
     globalThis.fetch = originalFetch
     await ctx.accountPool.setPermanentLocked('loomy', false)
     for (const { accountId, ref } of added) { await ctx.accountPool.removeAccount(accountId); creds.delete(ref) }
+  }
+
+  // ── #752：探测遇到上游 5xx / 非 JSON 时不能把整轮判成 UNKNOWN ─────────
+  //
+  // 真实缺陷：`probeCredential` 把 502 HTML 抛成普通 Error，`refresh()` 原样
+  // 上抛，adapter 的 stream 在「取凭据」阶段就失败 —— 宿主归类 UNKNOWN 且不重试。
+  // 同一时段的 chat 502 本来会按 SERVER 重试 5 次。这里锁死三条：
+  //   1. 探测 502 HTML 重试 3 次后，聊天仍会真的发出，并按 chat 自己的路径失败；
+  //   2. 200 + 100002 仍是 RefreshTokenExpiredError（不重试、不降级）；
+  //   3. 第一次 502、第二次 200 能重试成功。
+  {
+    const defaultRef = 'LOOMY_ACCESS_TOKEN'
+    const savedDefault = creds.get(defaultRef)
+    const savedAudit = auditFetch
+    const probeFixture = (ref, token) => {
+      creds.set(ref, { value: JSON.stringify({
+        access_token: token, userid: '123456789012345678', phone: '13800138000',
+        expires_at: String(Date.now() - 1000),
+      }) })
+    }
+    try {
+      assert.equal(ctx.accountPool.listAccountsByProvider('loomy').length, 0,
+        '#752 fixture uses the default Loomy credential, so no pool account may divert selection')
+
+      // 1. 502 HTML：3 次探测都失败后，本轮必须继续走到 chat。
+      probeFixture(defaultRef, 'probe-502-token')
+      let probeCalls = 0, chatCalls = 0
+      auditFetch = async (input, init) => {
+        const url = String(input)
+        if (url.includes('/points/records')) {
+          probeCalls++
+          return new Response('<html><body>502 Bad Gateway</body></html>', {
+            status: 502, headers: { 'content-type': 'text/html' },
+          })
+        }
+        if (url.endsWith('/models')) return Response.json({ code: '000000', data: [] })
+        if (url.endsWith('/chat/completions')) {
+          chatCalls++
+          assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer probe-502-token',
+            'the chat keeps using the existing credential instead of inventing a renewed one')
+          return new Response('upstream chat unavailable', { status: 502 })
+        }
+        throw new Error(`unexpected offline request: ${url}`)
+      }
+      let failure
+      try { await collect(adapters.get('loomy').stream({ ...options, provider: 'loomy' })) }
+      catch (error) { failure = error }
+      assert.ok(failure, 'the chat request itself still fails on the upstream 502')
+      assert.equal(failure.code, 'SERVER', 'the failure is the chat request\'s own retryable 5xx, not the probe error')
+      assert.notEqual(failure.name, 'RefreshTokenExpiredError')
+      assert.equal(probeCalls, 3, 'transient probe failures are retried exactly three times')
+      assert.equal(chatCalls, 1, 'the chat request is still sent after the probe gives up')
+
+      // 1b. 同一账号紧接着再取一次凭据（排队重启的形态）：探测失败后的
+      //     短宽限必须直接复用旧凭据，不能把三次探测和刷新预算再打一遍。
+      probeCalls = 0
+      chatCalls = 0
+      auditFetch = async (input, init) => {
+        const url = String(input)
+        if (url.includes('/points/records')) {
+          probeCalls++
+          return new Response('<html>502</html>', { status: 502, headers: { 'content-type': 'text/html' } })
+        }
+        if (url.endsWith('/chat/completions')) {
+          chatCalls++
+          assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer probe-502-token')
+          return new Response('still unavailable', { status: 502 })
+        }
+        throw new Error(`unexpected offline request: ${url}`)
+      }
+      await assert.rejects(collect(adapters.get('loomy').stream({ ...options, provider: 'loomy' })))
+      assert.equal(probeCalls, 0, 'the same account does not probe again inside the grace window')
+      assert.equal(chatCalls, 1, 'the queued retry still gets a real chat request')
+
+      // 2. 200 + 100002：明确的登录失效仍然终态。
+      const expiredRef = 'LOOMY_PROBE_100002_FIXTURE'
+      probeFixture(expiredRef, 'probe-100002-token')
+      probeCalls = 0
+      auditFetch = async input => {
+        const url = String(input)
+        if (url.includes('/points/records')) {
+          probeCalls++
+          return Response.json({ code: '100002', desc: '登录已失效' })
+        }
+        throw new Error(`unexpected offline request: ${url}`)
+      }
+      await assert.rejects(
+        ctx.loomyAuth.refreshAccountCredential(expiredRef),
+        error => error.name === 'RefreshTokenExpiredError' && /重新登录/.test(error.message),
+      )
+      assert.equal(probeCalls, 1, 'a definitive 100002 is not retried')
+
+      // 2b. 混合状态：HTTP 429 的 JSON 体仍是 100002 时必须立即终止。
+      const mixedRef = 'LOOMY_PROBE_429_100002_FIXTURE'
+      probeFixture(mixedRef, 'probe-429-100002-token')
+      probeCalls = 0
+      auditFetch = async input => {
+        const url = String(input)
+        if (url.includes('/points/records')) {
+          probeCalls++
+          return Response.json({ code: '100002', desc: '登录已失效' }, {
+            status: 429, headers: { 'content-type': 'application/json' },
+          })
+        }
+        throw new Error(`unexpected offline request: ${url}`)
+      }
+      await assert.rejects(
+        ctx.loomyAuth.refreshAccountCredential(mixedRef),
+        error => error.name === 'RefreshTokenExpiredError',
+      )
+      assert.equal(probeCalls, 1, '100002 is terminal even when the transport status is 429')
+
+      // 3. 第一次 502、第二次 200：有限重试要真的救回来。
+      const recoveredRef = 'LOOMY_PROBE_RECOVERY_FIXTURE'
+      probeFixture(recoveredRef, 'probe-recovery-token')
+      probeCalls = 0
+      const startedAt = Date.now()
+      auditFetch = async input => {
+        const url = String(input)
+        if (url.includes('/points/records')) {
+          probeCalls++
+          return probeCalls === 1
+            ? new Response('<html>502</html>', { status: 502 })
+            : Response.json({ code: '000000', data: { records: [] } })
+        }
+        throw new Error(`unexpected offline request: ${url}`)
+      }
+      await ctx.loomyAuth.refreshAccountCredential(recoveredRef)
+      assert.equal(probeCalls, 2, 'the second probe attempt succeeds')
+      assert.ok(Date.now() - startedAt >= 150, 'the retry waits before the second attempt')
+
+      // 4. 取消信号必须终止探测；不能继续发后面的重试。
+      const abortRef = 'LOOMY_PROBE_ABORT_FIXTURE'
+      probeFixture(abortRef, 'probe-abort-token')
+      probeCalls = 0
+      let startedResolve
+      const started = new Promise(resolve => { startedResolve = resolve })
+      auditFetch = async (_input, init) => {
+        probeCalls++
+        startedResolve()
+        return await new Promise((_, reject) => {
+          const abort = () => reject(init.signal.reason)
+          if (init.signal.aborted) abort()
+          else init.signal.addEventListener('abort', abort, { once: true })
+        })
+      }
+      const controller = new AbortController()
+      const pendingProbe = ctx.loomyAuth.refreshAccountCredential(abortRef, undefined, undefined, controller.signal)
+      await started
+      controller.abort()
+      await assert.rejects(pendingProbe, error => error.name === 'AbortError')
+      assert.equal(probeCalls, 1, 'an aborted probe does not schedule the next two attempts')
+
+      // 5. chat 已经回 401 时，后续探测失败不能把认证失败遮成 502/SERVER。
+      probeFixture(defaultRef, 'probe-auth-mask-token')
+      probeCalls = 0
+      chatCalls = 0
+      auditFetch = async (input, init) => {
+        const url = String(input)
+        if (url.includes('/points/records')) {
+          probeCalls++
+          return new Response('<html>probe down</html>', { status: 502, headers: { 'content-type': 'text/html' } })
+        }
+        if (url.endsWith('/chat/completions')) {
+          chatCalls++
+          assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer probe-auth-mask-token')
+          return new Response('unauthorized', { status: 401, headers: { 'content-type': 'application/json' } })
+        }
+        throw new Error(`unexpected offline request: ${url}`)
+      }
+      await assert.rejects(collect(adapters.get('loomy').stream({ ...options, provider: 'loomy' })), error => {
+        assert.equal(error.code, 'AUTH')
+        assert.equal(error.failure?.status, 401)
+        return true
+      })
+      assert.equal(probeCalls, 3, 'the auth refresh still makes its bounded probe attempts')
+      assert.equal(chatCalls, 1, 'a failed auth probe does not replay the rejected chat once more')
+      console.log('ok  #752 loomy probe: transient faults defer to chat, 100002 remains terminal, queue/abort/auth stay bounded')
+    } finally {
+      auditFetch = savedAudit
+      if (savedDefault === undefined) creds.delete(defaultRef)
+      else creds.set(defaultRef, savedDefault)
+      for (const ref of ['LOOMY_PROBE_100002_FIXTURE', 'LOOMY_PROBE_429_100002_FIXTURE', 'LOOMY_PROBE_RECOVERY_FIXTURE', 'LOOMY_PROBE_ABORT_FIXTURE']) creds.delete(ref)
+    }
   }
 }
 

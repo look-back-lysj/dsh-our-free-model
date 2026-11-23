@@ -24,6 +24,7 @@ import { ZCODE_CAPTCHA_FALLBACK } from './zcode-captcha.js'
 import type { CarrierOutcome } from './captcha-carrier.js'
 import type { ZcodeCredential } from './zcode.js'
 import { AccountPool, allAccountsRateLimitedForModel } from './account-pool.js'
+import { nextUtc8DayStartMs } from './model-queue.js'
 import { hasLegacyNamespaceRegistration, settingsOf, suppressAutoSettingsPage } from './settings-compat.js'
 import type { ImageRequestTarget } from './image-budget.js'
 import { buildRaccoonNickname, registerChannelPackRpc } from './channel-pack-rpc.js'
@@ -319,6 +320,7 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
   const throwIfAllAccountsRateLimited = (
     product: { id: string; displayName: string },
     modelId?: string,
+    shortRateLimitMs?: number,
   ): void => {
     const limited = allAccountsRateLimitedForModel(
       // 只统计**启用**账号：停用账号本就不参与自动选号，把它们算进来会
@@ -327,6 +329,22 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
       modelId ?? '',
     )
     if (limited === undefined) return
+    const now = Date.now()
+    if (shortRateLimitMs !== undefined) {
+      const waitMs = Math.max(1, limited.resetAtMs - now)
+      // 402 写的是 UTC+8 次日零点；429 的冷却最多 15 分钟。两种标记共用
+      // `modelRateLimits`，这里用「是否正好落在下一个日界」区分，避免把
+      // 短时限流误报成当日额度耗尽。
+      const quotaMarker = Math.abs(limited.resetAtMs - nextUtc8DayStartMs(now)) < 1_000
+      if (waitMs <= shortRateLimitMs && !quotaMarker) {
+        throw new LlmError(
+          `${product.displayName}：模型 ${modelId} 的可用账号均在短时限流中，`
+          + `${Math.ceil(waitMs / 1_000)} 秒后可重试（无需重新登录）。`,
+          'RATE_LIMIT',
+          { status: 429, providerRetryAfterMs: waitMs },
+        )
+      }
+    }
     throw new LlmError(
       `${product.displayName}：模型 ${modelId} 的可用账号均在限流中，`
       + `最近一个将于 ${new Date(limited.resetAtMs).toLocaleString('zh-CN')} 解禁。`
@@ -774,12 +792,14 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
         return undefined
       }
     },
-    refresh: async (accountId?: string) => {
+    refresh: async (accountId?: string, _reason?: 'auth', signal?: AbortSignal) => {
       const entry = accountId === undefined ? undefined
         : pool.listAccountsByProvider(LOOMY.id).find(account => account.id === accountId)
       if (accountId !== undefined && entry === undefined) throw new Error('loomy: account no longer exists')
-      if (entry) await loomy.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-      else await loomy.refresh()
+      // “探测暂时不可用”由 adapter 决定是否保留旧凭据：初始取号可以直接
+      // 交给 chat 判定，但 chat 自己回 401 时仍必须保留认证失败语义。
+      if (entry) await loomy.refreshAccountCredential(entry.credentialRef, pool, entry.id, signal)
+      else await loomy.refresh(signal)
       const resolved = await ctx.credentials.resolve(credentialRef(entry?.credentialRef ?? LOOMY.defaultCredentialRef))
       if (!resolved) throw new Error('loomy: credential no longer exists')
       return JSON.parse(resolved.value) as LoomyCredential
@@ -853,7 +873,9 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
         reportLedgerAccount(RACCOON.id, available.entry.id)
         return available.credential as unknown as RaccoonCredential
       }
-      throwIfAllAccountsRateLimited(RACCOON, modelId)
+      // 429 的短冷却与 402 的次日额度共用同一张表；让解析侧保留
+      // RATE_LIMIT 语义，否则选号入口会把「等 60 秒」误报成「今天用完」。
+      throwIfAllAccountsRateLimited(RACCOON, modelId, 15 * 60_000)
       const resolved = await ctx.credentials.resolve(credentialRef(RACCOON.defaultCredentialRef))
       if (!resolved) return undefined
       try {
