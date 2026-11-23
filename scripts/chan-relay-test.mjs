@@ -181,6 +181,22 @@ response = await request(relay.port, {
 check('identity encoding still allows the fold',
   JSON.parse(lastSeen().body.toString('utf8')).messages[0].role, 'system')
 
+// A caller may declare trailers while still sending a chunked JSON body.
+// Once the relay buffers and restates Content-Length, the Trailer header must
+// not be forwarded to Node's request, which would reject it as invalid.
+const trailerBody = Buffer.from('{"messages":[{"role":"developer","content":"x"}]}')
+response = await request(relay.port, {
+  method: 'POST',
+  route: '/v1/chat/completions',
+  headers: { ...jsonHeaders, trailer: 'x-checksum' },
+  body: trailerBody,
+})
+check('a chunked body with a Trailer header is accepted', response.status, 200)
+forwarded = lastSeen()
+check('the Trailer declaration is removed after buffering', forwarded.headers.trailer, undefined)
+check('the same request is still folded',
+  JSON.parse(forwarded.body.toString('utf8')).messages[0].role, 'system')
+
 const exactBytes = Buffer.from('{\n  "model": "m",\n  "messages": [ {"role": "system", "content": "keep  spaces"}, {"role":"user","content":"你好"} ]\n}\n', 'utf8')
 response = await request(relay.port, { method: 'POST', route: '/v1/chat/completions', headers: jsonHeaders, body: exactBytes })
 check('a body without developer is accepted', response.status, 200)
@@ -259,6 +275,26 @@ check('the 413 asks for the connection to close', response.headers.connection, '
 check('the 413 is an OpenAI-shaped error', JSON.parse(response.body.toString('utf8'))?.error?.code, 'invalid_request_error')
 check('an over-limit body never reaches the gateway', seenRequests.length, seenBeforeOversize)
 await smallRelay.close()
+
+// Re-serialising JSON can grow the body (1e-6 becomes 0.000001). The limit
+// must also apply to the bytes actually sent upstream, not just the input.
+const rewriteBody = Buffer.from('{"messages":[{"role":"developer","content":"x"}],"value":1e-6}')
+const rewriteRelay = await startChanRelay({
+  config: () => ({ enabled: true, host: '127.0.0.1', port: 0, lanKey: 'relay-key', gatewayHost: '127.0.0.1', gatewayPort, gatewayKey: 'gw-secret' }),
+  log: () => {},
+  requestBodyLimit: rewriteBody.length,
+})
+const seenBeforeRewrite = seenRequests.length
+response = await request(rewriteRelay.port, {
+  method: 'POST',
+  route: '/v1/chat/completions',
+  headers: jsonHeaders,
+  body: rewriteBody,
+})
+check('a rewrite that grows past the body limit is refused with 413', response.status, 413)
+check('the rewritten over-limit error asks to close', response.headers.connection, 'close')
+check('the rewritten over-limit body never reaches the gateway', seenRequests.length, seenBeforeRewrite)
+await rewriteRelay.close()
 
 // ── the switches: disabled relay, missing gateway credential ─────────────────
 let disabled = true

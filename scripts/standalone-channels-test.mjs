@@ -167,6 +167,12 @@ const rpc = async (method, payload = {}) => {
   return value.value
 }
 try {
+  await check('独立版错误保留 status 与 Retry-After 结构', async () => {
+    const { LlmError } = await import('../packages/standalone/channels/contracts.mjs')
+    const error = new LlmError('fixture', 'RATE_LIMIT', { status: 429, providerRetryAfterMs: 2_000 })
+    assert.equal(error.failure?.status, 429)
+    assert.equal(error.failure?.providerRetryAfterMs, 2_000)
+  })
   await check('独立业务产物的 Chat / Responses 保留工具调用关联与结果', async () => {
     const { toGenerateOptions, toResponsesGenerateOptions } = await import('../packages/standalone/channels/business.mjs')
     const signal = new AbortController().signal

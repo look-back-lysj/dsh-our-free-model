@@ -21,10 +21,10 @@
  */
 
 import { Service, type Context } from '@deepseek-ai/cordis'
+import { LlmError } from '@deepseek-ai/dsh-llm'
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
 import {
   LOOMY_AUTH_ERROR_CODE,
-  LOOMY_REQUEST_TIMEOUT_MS,
   credentialExpiresAtMs,
   isLoomyExpired,
   parseLoomyEnvelope,
@@ -43,6 +43,7 @@ import {
 } from './loomy-onboarding.js'
 import { AccountPool } from './account-pool.js'
 import { syncAccountExpiry, type ExpiryAccessors } from './expiry-sync.js'
+import { retryAfterMsFromResponse } from './retry-after.js'
 
 /**
  * Loomy 凭据 → 账号池有效期的提取器。
@@ -91,14 +92,15 @@ export class RefreshTokenExpiredError extends Error {
  * Loomy refresh 回调捕获它并返回已有凭据，让真正的 chat 请求去面对上游；
  * 万一它逃到宿主，也会因为 `TRANSPORT` 进入常规重试白名单。
  */
-export class LoomyProbeUnavailableError extends Error {
-  /** 宿主可重试错误码（`DEFAULT_RETRYABLE_CODES` 含 `TRANSPORT`）。 */
-  readonly code = 'TRANSPORT'
+export class LoomyProbeUnavailableError extends LlmError {
   /** 语义标记：这是可重试的瞬时故障，不是凭据终态。 */
   readonly retryable = true
 
   constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options)
+    // Extending LlmError keeps the host's own taxonomy: a direct RPC refresh
+    // sees TRANSPORT instead of UNKNOWN, while `instanceof` still identifies
+    // the special "probe unavailable" case for the adapter.
+    super(message, 'TRANSPORT', options?.cause === undefined ? undefined : { cause: options.cause })
     this.name = 'LoomyProbeUnavailableError'
   }
 }
@@ -111,12 +113,41 @@ export class LoomyProbeUnavailableError extends Error {
  */
 const LOOMY_PROBE_RETRY_DELAYS_MS = [200, 600] as const
 
+/** 单次探测的上限。三次最坏 30 秒，远小于聊天请求本身的 60 秒。 */
+const LOOMY_PROBE_TIMEOUT_MS = 10_000
+
+/** 429 的 Retry-After 可以提示等待，但探测不能因此把聊天拖过 5 秒。 */
+const LOOMY_PROBE_RETRY_MAX_MS = 5_000
+
 /** 单次探测的判定结果。 */
 type LoomyProbeOutcome =
   | { kind: 'ok' }
   | { kind: 'expired'; message: string }
-  | { kind: 'transient'; message: string }
+  | { kind: 'transient'; message: string; retryAfterMs?: number }
   | { kind: 'fatal'; message: string }
+
+/** 可被调用方取消的短等待。 */
+function waitForProbeRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const cleanup = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+    const onAbort = (): void => {
+      cleanup()
+      reject(signal?.reason)
+    }
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
 
 /** 一次成功登录的结果。 */
 export interface LoomyLoginResult {
@@ -360,10 +391,10 @@ export class LoomyAuth extends Service {
    *   非 JSON / 408 / 429）。调用方**不要**据此要求重新登录；聊天路径应保留
    *   已有凭据，让上游的 chat 请求按它自己的重试策略处理。
    */
-  async refresh(): Promise<void> {
+  async refresh(signal?: AbortSignal): Promise<void> {
     const credential = await this.resolveDefaultCredential()
     if (credential === undefined) throw new RefreshTokenExpiredError('凭据未配置，请先登录')
-    await this.probeCredential(credential)
+    await this.probeCredential(credential, signal)
     this.lastRefreshError = undefined
   }
 
@@ -390,13 +421,14 @@ export class LoomyAuth extends Service {
     refName: string,
     pool?: AccountPool,
     accountId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const ref = credentialRef(refName)
     const resolved = await this.ctx.credentials.resolve(ref)
     if (!resolved) throw new Error('凭据未配置')
     const credential = parseCredential(resolved.value)
     if (!credential) throw new Error('凭据解析失败')
-    await this.probeCredential(credential)
+    await this.probeCredential(credential, signal)
     await syncAccountExpiry({
       pool,
       provider: this.product.id,
@@ -429,27 +461,36 @@ export class LoomyAuth extends Service {
    * @throws {RefreshTokenExpiredError} 收到 `100002`（登录已失效）。
    * @throws {LoomyProbeUnavailableError} 重试后仍无法判定凭据有效性。
    */
-  private async probeCredential(credential: LoomyCredential): Promise<void> {
+  private async probeCredential(credential: LoomyCredential, signal?: AbortSignal): Promise<void> {
     const attempts = LOOMY_PROBE_RETRY_DELAYS_MS.length + 1
     let lastReason = '未知原因'
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
+      signal?.throwIfAborted()
       if (attempt > 1) {
         const delayMs = LOOMY_PROBE_RETRY_DELAYS_MS[attempt - 2]!
-        await new Promise((resolve) => setTimeout(resolve, delayMs))
+        await waitForProbeRetry(delayMs, signal)
       }
 
-      const outcome = await this.probeCredentialOnce(credential)
+      const outcome = await this.probeCredentialOnce(credential, signal)
       if (outcome.kind === 'ok') return
       if (outcome.kind === 'expired') throw new RefreshTokenExpiredError(outcome.message)
       if (outcome.kind === 'fatal') throw new Error(outcome.message)
 
       lastReason = outcome.message
       if (attempt < attempts) {
+        const waitMs = Math.min(
+          Math.max(LOOMY_PROBE_RETRY_DELAYS_MS[attempt - 1]!, outcome.retryAfterMs ?? 0),
+          LOOMY_PROBE_RETRY_MAX_MS,
+        )
         this.ctx.logger?.warn?.(
           `[loomy] 凭据探测第 ${attempt}/${attempts} 次暂时失败（${outcome.message}），`
-          + `${LOOMY_PROBE_RETRY_DELAYS_MS[attempt - 1]}ms 后重试`,
+          + `${waitMs}ms 后重试`,
         )
+        // 下一轮开头等的是固定退避；把 Retry-After 作为额外等待放在这里。
+        if (waitMs > LOOMY_PROBE_RETRY_DELAYS_MS[attempt - 1]!) {
+          await waitForProbeRetry(waitMs - LOOMY_PROBE_RETRY_DELAYS_MS[attempt - 1]!, signal)
+        }
       }
     }
 
@@ -460,7 +501,9 @@ export class LoomyAuth extends Service {
   }
 
   /** 执行单次探测并分类结果（不重试、不抛错）。 */
-  private async probeCredentialOnce(credential: LoomyCredential): Promise<LoomyProbeOutcome> {
+  private async probeCredentialOnce(credential: LoomyCredential, signal?: AbortSignal): Promise<LoomyProbeOutcome> {
+    const timeoutSignal = AbortSignal.timeout(LOOMY_PROBE_TIMEOUT_MS)
+    const probeSignal = signal === undefined ? timeoutSignal : AbortSignal.any([signal, timeoutSignal])
     let response: Response
     try {
       response = await this.fetchImpl(
@@ -468,10 +511,11 @@ export class LoomyAuth extends Service {
         {
           method: 'GET',
           headers: { Accept: 'application/json', token: credential.access_token },
-          signal: AbortSignal.timeout(LOOMY_REQUEST_TIMEOUT_MS),
+          signal: probeSignal,
         },
       )
     } catch (error) {
+      if (signal?.aborted) throw signal.reason
       // 传输层失败**不能**判为终态 —— 网络抖动不该让用户重新登录。
       return {
         kind: 'transient',
@@ -480,25 +524,41 @@ export class LoomyAuth extends Service {
     }
 
     const status = response.status
-    if (status >= 500 || status === 408 || status === 429) {
-      // 网关/限流层没有回答“凭据是否有效”。先释放响应体再重试。
-      try { await response.body?.cancel() } catch {}
-      return { kind: 'transient', message: `HTTP ${status}` }
+    const transientStatus = status >= 500 || status === 408 || status === 429
+    const retryAfterMs = transientStatus ? retryAfterMsFromResponse(response.headers) : undefined
+    let parsed: unknown
+    let parsedBody = false
+    const contentType = String(response.headers.get('content-type') ?? '').toLowerCase()
+    // 408/429/5xx 也可能带着业务码 100002（混合状态）。只在声明 JSON 时
+    // 读体，普通 HTML 代理页仍按瞬时故障处理，避免把整页错误吞进内存。
+    if (!transientStatus || contentType.includes('json')) {
+      try {
+        parsed = await response.json()
+        parsedBody = true
+      } catch {
+        if (!transientStatus && (status === 401 || status === 403)) {
+          // 明确的认证失败：不重试，也不降级成“继续聊天”。
+          return { kind: 'fatal', message: `Loomy 凭据探测被拒绝（HTTP ${status}），请重新登录` }
+        }
+        if (transientStatus) {
+          try { await response.body?.cancel() } catch {}
+          return { kind: 'transient', message: `HTTP ${status}`, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) }
+        }
+        // 200/4xx 却回 HTML（代理页、登录页）同样无法判定，按瞬时故障处理。
+        return { kind: 'transient', message: `响应不是 JSON（HTTP ${status}）` }
+      }
     }
 
-    let parsed: unknown
-    try {
-      parsed = await response.json()
-    } catch {
-      if (status === 401 || status === 403) {
-        // 明确的认证失败：不重试，也不降级成“继续聊天”。
-        return { kind: 'fatal', message: `Loomy 凭据探测被拒绝（HTTP ${status}），请重新登录` }
+    const envelope = parsedBody ? parseLoomyEnvelope(parsed) : undefined
+    if (transientStatus) {
+      if (envelope?.code === LOOMY_AUTH_ERROR_CODE) {
+        return { kind: 'expired', message: `Loomy 凭证已失效，请重新登录（${envelope.message}）` }
       }
-      // 200/4xx 却回 HTML（代理页、登录页）同样无法判定，按瞬时故障处理。
+      return { kind: 'transient', message: `HTTP ${status}`, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) }
+    }
+    if (envelope === undefined) {
       return { kind: 'transient', message: `响应不是 JSON（HTTP ${status}）` }
     }
-
-    const envelope = parseLoomyEnvelope(parsed)
     if (status === 401 || status === 403) {
       // ⚠️ 只有业务码 100002 才代表登录失效（Loomy 的业务失败恒 HTTP 200，
       // 故 401/403 只可能来自网关/中间层）。HTTP 401 即使 body 自称成功也不能信。

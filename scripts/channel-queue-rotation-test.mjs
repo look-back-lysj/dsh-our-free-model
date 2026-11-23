@@ -384,6 +384,11 @@ export async function verifyChannelQueueRotation() {
   {
     const { registerRaccoonLlm } = await import('../vendor/channel-pack/src/raccoon-adapter.ts')
     const { nextUtc8DayStartMs } = await import('../vendor/channel-pack/src/model-queue.ts')
+    const { parseRetryAfterMs } = await import('../vendor/channel-pack/src/retry-after.ts')
+    assert.equal(parseRetryAfterMs('0'), 0, 'zero means release now')
+    for (const invalid of ['0x2', '1e2', '1.5', '+2', '-5']) {
+      assert.equal(parseRetryAfterMs(invalid), undefined, `${invalid} is not an integer-seconds Retry-After`)
+    }
 
     const recordingPool = ids => {
       const pool = makePool('raccoon', ids), marked = []

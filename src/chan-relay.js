@@ -273,10 +273,18 @@ export async function startChanRelay({ config, log = () => {}, requestBodyLimit 
       // The buffered length is now known, so framing is stated once, exactly.
       headers['content-length'] = String(buffered.length)
       delete headers['transfer-encoding']
+      // The body is no longer chunked, so a Trailer declaration is invalid.
+      // Node rejects the upstream request if it is left behind.
+      delete headers.trailer
       const folded = foldDeveloperRole(buffered)
       if (folded !== null) {
         buffered = folded.payload
         headers['content-length'] = String(buffered.length)
+        if (buffered.length > bodyLimit) {
+          openAiError(res, 413, 'invalid_request_error',
+            `rewritten request body is too large (limit ${bodyLimit} bytes)`, { connection: 'close' })
+          return
+        }
         log(`folded ${folded.folded} developer message(s) to system role for ${req.method} ${routePath}`)
       }
     }

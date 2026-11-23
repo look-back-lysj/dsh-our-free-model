@@ -16,7 +16,12 @@ output = output.replace(/from "@deepseek-ai\/(?:cordis|dsh-credentials|dsh-llm)"
 replaceOnce(output.match(/function resolveChannelPackHome\(ctx\) \{[\s\S]*?\n\}/)?.[0] ?? 'missing home resolver',
   'function resolveChannelPackHome(ctx) {\n  if (typeof ctx.platform?.channelHome !== "string") throw new Error("独立渠道缺少数据目录");\n  return ctx.platform.channelHome;\n}')
 replaceOnce('  mountOpenAiGateway(ctx, pool);\n  installLoopResume(ctx);', '  // 独立服务由外层提供统一网关，宿主 Agent 自动续跑没有对应服务。')
-replaceOnce('resolve(dirname(fileURLToPath(import.meta.url)), "qoder-auth-wasm.wasm")', 'fileURLToPath(new URL("../../../vendor/channel-pack/qoder-auth-wasm.wasm", import.meta.url))')
+const qoderWasmPaths = [...output.matchAll(/resolve\d*\(dirname\d*\((fileURLToPath\d*)\(import\.meta\.url\)\), "qoder-auth-wasm\.wasm"\)/g)]
+if (qoderWasmPaths.length !== 1 || output.split('"qoder-auth-wasm.wasm"').length !== 2) {
+  throw new Error('独立渠道生成位置不唯一或已改变：qoder-auth-wasm')
+}
+const qoderWasmPath = qoderWasmPaths[0]
+replaceOnce(qoderWasmPath[0], `${qoderWasmPath[1]}(new URL("../../../vendor/channel-pack/qoder-auth-wasm.wasm", import.meta.url))`)
 replaceOnce('export {\n  Config,', `export {
   toGenerateOptions, toResponsesGenerateOptions, normalizeReasoningEffort,
   responsesReasoningEffort, normalizeMaxTokens, responsesMaxOutputTokens,

@@ -29,6 +29,7 @@ import {
   type LoomyCredential,
 } from './loomy.js'
 import { LOOMY, type LoomyFallbackModel, type LoomyProduct } from './loomy-product.js'
+import { LoomyProbeUnavailableError } from './loomy-auth.js'
 import {
   registerAdapterIdempotent,
 } from './llm-register-compat.js'
@@ -43,6 +44,9 @@ import {
 
 /** 本适配器注册的 provider 路由名（等价于 `LOOMY.id`）。 */
 export const PROVIDER = 'loomy'
+
+/** 探测失败后的旧凭据宽限，覆盖排队包装层的 30 分钟等待上限。 */
+const PROBE_DEFERRAL_MS = 30 * 60_000
 
 /** 远端模型条目（已归一）。 */
 export interface LoomyRemoteModel {
@@ -207,7 +211,7 @@ export interface LoomyAdapterOptions {
    * ⚠️ Loomy **没有 refresh 端点**，故实现只做**有效性探测**并在失效时抛错，
    * 不会（也无法）续期。
    */
-  refresh: (accountId?: string, reason?: 'auth') => Promise<LoomyCredential | void>
+  refresh: (accountId?: string, reason?: 'auth', signal?: AbortSignal) => Promise<LoomyCredential | void>
   nextAccount?: (
     modelId: string,
     tried: ReadonlySet<string>,
@@ -234,6 +238,11 @@ export class LoomyAdapter extends LlmAdapter {
   private remoteModels: LoomyRemoteModel[] | undefined
   /** 目录加载闸门：并发去重 + 失败/空结果冷却（见 `remote-catalog-gate.ts`）。 */
   private readonly catalogGate = new RemoteCatalogGate()
+  /**
+   * 探测失败后的宽限：同一账号在接下来的取凭据过程中直接用旧值，
+   * 避免排队重启（或连续请求）把三次探测放大成三轮，并撞上刷新预算。
+   */
+  private readonly probeDeferredUntil = new Map<string, number>()
 
   constructor(private readonly options: LoomyAdapterOptions) {
     super()
@@ -417,8 +426,18 @@ export class LoomyAdapter extends LlmAdapter {
     let accountId = credential === undefined ? undefined
       : await this.options.accountPool?.findAccountIdByCredential(this.product.id, credential.access_token)
     if (credential === undefined || isLoomyExpired(credential)) {
-      credential = await this.options.refresh(accountId || undefined)
-        ?? await this.options.resolveCredential(options.model)
+      const key = accountId ?? 'default'
+      if ((this.probeDeferredUntil.get(key) ?? 0) <= Date.now()) {
+        try {
+          const refreshed = await this.options.refresh(accountId || undefined, undefined, options.signal)
+          this.probeDeferredUntil.delete(key)
+          credential = refreshed ?? await this.options.resolveCredential(options.model)
+        } catch (error) {
+          if (!(error instanceof LoomyProbeUnavailableError)) throw error
+          this.probeDeferredUntil.set(key, Date.now() + PROBE_DEFERRAL_MS)
+          credential = await this.options.resolveCredential(options.model)
+        }
+      }
     }
     if (credential === undefined || credential.access_token.length === 0) {
       throw new LlmError('loomy: no usable credential; log in first', 'MISSING_CREDENTIAL')
@@ -510,8 +529,20 @@ export class LoomyAdapter extends LlmAdapter {
         let response = await send(credential.access_token)
         if (response.status === 401 || response.status === 403) {
           await response.body?.cancel()
-          credential = await this.options.refresh(accountId || undefined, 'auth')
-            ?? await this.options.resolveCredential(options.model)
+          try {
+            const refreshed = await this.options.refresh(accountId || undefined, 'auth', options.signal)
+            credential = refreshed ?? await this.options.resolveCredential(options.model)
+            this.probeDeferredUntil.delete(accountId ?? 'default')
+          } catch (error) {
+            if (!(error instanceof LoomyProbeUnavailableError)) throw error
+            // The chat endpoint already said 401/403. A probe that cannot
+            // answer must not hide that verdict behind a later 502.
+            throw new LlmError(
+              'loomy: credential was rejected and its validity probe is unavailable',
+              'AUTH',
+              { status: response.status, cause: error },
+            )
+          }
           if (credential === undefined || credential.access_token.length === 0) {
             throw new LlmError('loomy: credential expired and refresh failed', 'AUTH', { status: response.status })
           }
