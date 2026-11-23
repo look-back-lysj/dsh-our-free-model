@@ -79,8 +79,8 @@
     },
     {
       "path": "src/chan-relay.js",
-      "size": 8014,
-      "sha256": "5700e08189dafdb6631ec9378b59b051cca3aed8f997c2e36af1ae6699ca1128"
+      "size": 14623,
+      "sha256": "91025fd2dd134b68f0c1cbd845d52d93a8a612d1f471ef59bd6c3812bc2d89d6"
     },
     {
       "path": "src/channel.js",
@@ -379,8 +379,8 @@
     },
     {
       "path": "vendor/channel-pack/pack.js",
-      "size": 2627512,
-      "sha256": "04b160ac4dc9b2fff7eb418668e473a269941ae5db4f736a301dbb01313bb597"
+      "size": 2860632,
+      "sha256": "15835e58d72a2dcb3c8efc3555ed5f7d5fd49b6090de553b68957021bbb45799"
     },
     {
       "path": "vendor/channel-pack/qoder-auth-wasm.wasm",
