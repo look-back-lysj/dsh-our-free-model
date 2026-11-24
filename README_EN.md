@@ -20,12 +20,10 @@
 
 <div align="center">
 
-> All you do is install this plugin in dsh — no login, no sign-up, no API key, no other
-> step of any kind. The frontier models are simply there, DeepSeek V4.1 Flash and
-> Kimi K3 among them. Completely free, with no usage cap.
+> Install the plugin in dsh to use the free lane without signing in, creating an
+> account, or entering an API key.
 >
-> 你只需在 dsh 里装上这个插件，无需登录、注册、填 API Key 或任何其它操作，就能用上包括
-> DeepSeek V4.1 Flash、Kimi K3 在内的前沿模型——完全免费，不限量。
+> 在 dsh 里装上插件即可使用免费车道，无需登录、注册或填写 API Key。
 >
 > The roster follows upstream, availability is measured from **your own** network
 > egress, the thinking-effort control sends a real budget instead of a prompt hint, and
@@ -64,7 +62,7 @@
 - **Works without a browser UI** — only `llm` is a hard dependency, so the plugin activates on a headless composition such as dsh-tui and still serves its models. The dashboard half lives on its own fiber and mounts itself when `webServer` appears, so a composition that loads plugins before its HTTP server exists still gets its settings page. Availability probing and the background loops run on plain timers.
 - **Usage dashboard, local only** — token heatmap, cumulative curve by total or per model, output speed and time-to-first-token sampled per call. Nothing is uploaded.
 - **OpenAI-compatible forward port** — expose these models to any other local tool through a base URL plus a generated API key. Assistant string `reasoning_content` fields in Chat history are preserved for tool follow-ups, including explicit empty strings; absent fields are not fabricated.
-- **EAC lane** — a co-paid lane for DSHEAC AIO and kernel-declared `desktop`, `tauri`, `web`, or `web-desktop` profiles, with models prefixed `EAC`. Its credential is sealed; host admission and server-side GitHub authorization (sign in and star the repository) remain separate requirements. Command-line profile arguments alone do not grant access.
+- **EAC lane** — provided by the project maintainers for DSHEAC AIO and kernel-declared `desktop`, `tauri`, `web`, or `web-desktop` profiles. On a compatible host, sign in to GitHub and star this repository to unlock access at no cost. The credential is sealed, and the server verifies GitHub authorization. Models use the `EAC` prefix. For example, Kimi K3.1 Pro appears as EAC Kimi K3.1 Pro when included in the lane's model list. Command-line profile arguments alone do not grant access.
 - **The Kilo channel (keyless free pool)** — the free model pool of Kilo AI's public gateway (the listing's `isFree` slice, fetched live, including the `kilo-auto/free` auto-router) is built in; no account, no key. Model cards carry a Kilo badge. Thinking effort works like the EAC lane: the model's own level menu (Off / Low / Medium / High, default High), sent for real through the gateway's unified `reasoning` parameter — Off was verified family by family to zero out thinking (nemotron, ling, dots, poolside, apodex, cohere); the stepfun and liquid endpoints refuse to disable thinking (HTTP 400) and the two auto-routers ignore it, so those models' menus omit the Off rung. The pool is the upstream's free offer, and its model cards state that prompts may be logged to improve their services — never send sensitive content; see the [Disclaimer](#disclaimer).
 - **The aggregate lane — your own key, 76 providers** — a new settings tab brings third-party endpoints into the same roster: the registry ships 76 providers (NVIDIA NIM, OpenRouter, Groq, Cerebras, SambaNova, Gemini, DeepSeek, Mistral, Together, Fireworks, SiliconFlow, Nebius, Chutes, Hugging Face, Cloudflare, Z.ai, Kimi, MiniMax, QwenCloud/Alibaba, Bedrock, Vertex, Vercel AI Gateway, Azure OpenAI, FleetRelay Gateway, plus the no-account Ollama, LM Studio and llama.cpp). Configuring a provider (a key for the ones that need one; the local no-account ones need none) turns each of its models into a `provider/model` row in the picker and on the local gateway. Keys stay in the local `0600` settings.json; the API echoes only `hasKey` and a `…abcd` fingerprint. Per provider: enable/disable, Test (a *listing* probe — it verifies a key without spending a generation), Discover, a base-URL override, a model-list override and Remove. OAuth/ADC providers are listed but marked not drivable here. OpenCode's keyless free pool is deliberately **not** a registry row: it requires a per-request minted session id, the v2 client User-Agent and a set of official tool declarations, which this lane's generic transport has nowhere to carry — listing it would only add a picker row that can never answer, and those ten models are served natively by the plugin's own free lane.
 - **Token savers** — three things: tool-output compaction (RTK) rewrites `tool_result` content in place before the request is sent (git diff / status / log, grep, find, ls, tree, build logs, numbered file dumps, search listings, duplicate log lines) — measured live, a 40 KB `git diff` lost 90% of its bytes and the model still answered about it; prompt shaping offers the caveman and ponytail families, every level off by default; and five local answers that never call a provider. The settings page reports bytes before/after, percent saved, blocks compacted and calls measured, from the same stats rows the usage charts read.
@@ -838,9 +836,9 @@ On privacy and trust, plainly:
   accept that upstream's terms of service and usage policy; throttling, bans or
   other consequences of violating them are yours to own. The plugin makes no
   promise about any upstream's availability, accuracy or continuity.
-- **The EAC lane is a shared, co-paid offer.** Its gateway is deployed by the
-  repository maintainer and unlocked by a GitHub login plus a star; it is for
-  authorized users only. Do not try to bypass the gate, resell, or share access —
+- **The EAC lane requires GitHub authorization.** Sign in to GitHub and star this
+  repository to unlock access at no cost. The project maintainers run the
+  gateway. Do not try to bypass the gate, resell, or share access —
   abuse tightens the lane for everyone.
 - **The plugin is not affiliated with, nor endorsed by, any of the upstreams.**
   Vendor names and trademarks belong to their owners and are cited only to name
