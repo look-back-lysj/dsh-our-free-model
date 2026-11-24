@@ -104,6 +104,12 @@ export function classifyFailure(status, payload, retryAfterMs) {
     ? `the gateway's front proxy answered HTTP ${status} with an HTML error page — usually a WAF or body-size limit in front of the gateway, not your credentials; if this hit a long conversation, its request size is the likely trigger`
     : raw
   const flat = message.toLowerCase()
+  // A refusal delivered inside a 2xx body or an in-stream `error` frame has no
+  // HTTP status to classify by: the envelope's own `type` is the only
+  // machine-readable discriminator left. Statuses that already speak keep
+  // their branches below — 401/403, the 408/425 carve-out, ModelError — so the
+  // type mapping is deliberately limited to a status that carries no verdict.
+  const statusCarriesNoVerdict = status === undefined || status === null || (status >= 200 && status < 300)
   if (type === 'RegionError' || /not available in your country|region/i.test(flat)) {
     return new UpstreamError(message, CODE.region, { status, type })
   }
@@ -152,6 +158,21 @@ export function classifyFailure(status, payload, retryAfterMs) {
   if (status === 401 || status === 403) return new UpstreamError(message, isHtmlPage ? CODE.client : CODE.credential, { status, type })
   if (type === 'ModelError' || /model is unavailable|not supported/.test(flat)) {
     return new UpstreamError(message, CODE.server, { status, type, unavailable: true })
+  }
+  // Only after every dedicated type and description above has passed: a
+  // generic envelope type fills the gap when the status is 2xx or absent. A
+  // dead credential is not retryable, a refused request reproduces itself, and
+  // a spent bucket is a rate limit, so none may fall through to SERVER. The
+  // ordering also keeps a generic `type` from erasing the more specific
+  // reading of the message (model unavailable, free-tier lock, GitHub auth).
+  if (statusCarriesNoVerdict && type === 'rate_limit_error') {
+    return new UpstreamError(message, CODE.quota, { status, type, providerRetryAfterMs: retryAfterMs })
+  }
+  if (statusCarriesNoVerdict && type === 'authentication_error') {
+    return new UpstreamError(message, CODE.credential, { status, type })
+  }
+  if (statusCarriesNoVerdict && type === 'invalid_request_error') {
+    return new UpstreamError(message, CODE.client, { status, type })
   }
   // 4xx is the request's own fault: replaying the identical body reproduces the
   // identical refusal, so it stays outside the harness's retryable set — which
