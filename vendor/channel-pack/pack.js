@@ -39065,6 +39065,16 @@ function traeCacheReadTokens(usage) {
   if (typeof openai === "number" && openai > 0) return openai;
   return 0;
 }
+function isCompleteJsonObject(raw) {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return false;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
 function traeDisplayName(model) {
   const rate = model.creditsRate;
   if (rate === void 0) return model.name;
@@ -39573,6 +39583,7 @@ var TraeAdapter = class extends LlmAdapter3 {
     const toolIds = /* @__PURE__ */ new Map();
     let buffer = "";
     let streamEnded = false;
+    let eofReached = false;
     let finishReason2;
     let currentEvent = "";
     let currentData = "";
@@ -39598,17 +39609,29 @@ var TraeAdapter = class extends LlmAdapter3 {
           }
           throw error;
         }
-        if (result.done) break;
-        buffer += decoder.decode(result.value, { stream: true });
+        if (result.done) {
+          buffer += decoder.decode();
+          buffer += "\n\n";
+          eofReached = true;
+        } else {
+          buffer += decoder.decode(result.value, { stream: true });
+        }
         let newline;
         while ((newline = buffer.indexOf("\n")) !== -1) {
           const line2 = buffer.slice(0, newline);
           buffer = buffer.slice(newline + 1);
           if (line2.trim().length === 0) {
             if (currentEvent.length > 0) {
-              const ev = parseTraeSSELine(currentEvent, currentData);
+              const isEofTail = eofReached;
+              const rawEvent = currentEvent;
+              const rawData = currentData;
               currentEvent = "";
               currentData = "";
+              if (isEofTail && rawEvent.trim() === "done" && !isCompleteJsonObject(rawData)) {
+                sawAnyUpstreamEvent = true;
+                continue;
+              }
+              const ev = parseTraeSSELine(rawEvent, rawData);
               if (ev === void 0) continue;
               sawAnyUpstreamEvent = true;
               switch (ev.event) {
@@ -39757,6 +39780,7 @@ var TraeAdapter = class extends LlmAdapter3 {
           });
           break;
         }
+        if (eofReached) break;
       }
     } finally {
       await reader.cancel().catch(() => {
@@ -39828,12 +39852,13 @@ var TraeAdapter = class extends LlmAdapter3 {
     const argsTruncated = [...toolCalls.values()].some((block) => isTruncatedArguments(block.text));
     const droppedUnnamedCalls = [...toolCalls.values()].some((block) => !block.announced);
     const proseCutByStopString = finishReason2 === "stop" && toolOrder.length === 0 && isProseTruncatedByStopString(emittedProse);
+    const truncatedStream = finishReason2 === void 0 && !streamEnded && blockCount > 0;
     const reasoningLoopIsSoleOutput = loopDetected && emittedProse === "" && toolOrder.length === 0;
     const reason = reasoningLoopIsSoleOutput ? { kind: "error", failure: reasoningLoopFailure(
       loopGuard?.diagnostics,
       options.maxTokens,
       "reasoning"
-    ) } : loopDetected ? { kind: "max-tokens" } : finishReason2 === "length" || finishReason2 === void 0 && toolOrder.length > 0 || argsTruncated || proseCutByStopString || droppedUnnamedCalls && toolOrder.length === 0 ? { kind: "max-tokens" } : finishReason2 === "tool_calls" || toolOrder.length > 0 ? { kind: "tool-calls" } : { kind: "stop" };
+    ) } : loopDetected ? { kind: "max-tokens" } : finishReason2 === "length" || finishReason2 === void 0 && toolOrder.length > 0 || argsTruncated || proseCutByStopString || truncatedStream || droppedUnnamedCalls && toolOrder.length === 0 ? { kind: "max-tokens" } : finishReason2 === "tool_calls" || toolOrder.length > 0 ? { kind: "tool-calls" } : { kind: "stop" };
     yield { type: "finish", reason: resolveEmptyResponseReason(reason, blockCount) };
   }
 };

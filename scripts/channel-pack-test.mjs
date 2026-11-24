@@ -901,6 +901,107 @@ async function verifySourceRegressions({ ctx, adapters, call, creds }) {
     assert.equal(thinkingBlocks.some(block => block.type === 'text' && block.text.trim() === ''), false)
     const splitProse = await collect(consume(response(frame({ content: ' \n' }, null), frame({ content: 'answer' }))))
     assert.equal(assemble(splitProse).find(block => block.type === 'text').text, ' \nanswer')
+    if (provider === 'trae') {
+      // Issue #910: the upstream can close the body after a text event without
+      // ever sending `event: done`. That is a cut, not a normal answer.
+      const eofNoDone = await collect(consume(new Response(
+        'event: output\ndata: {"response":"partial answer"}\n\n',
+      )))
+      assert.equal(eofNoDone.at(-1).reason.kind, 'max-tokens', 'trae: EOF without done is a cut')
+      assert.ok(eofNoDone.some(row => row.type === 'block-end'
+        && row.block.type === 'text' && row.block.text === 'partial answer'), 'trae: a cut keeps its text block')
+      // A real `event: done` still proves completion.
+      const eofDone = await collect(consume(new Response(
+        'event: output\ndata: {"response":"partial answer"}\n\n'
+        + 'event: done\ndata: {"finish_reason":"stop"}\n\n',
+      )))
+      assert.equal(eofDone.at(-1).reason.kind, 'stop', 'trae: done remains a normal stop')
+      // A complete JSON `done` without its trailing blank line is still a
+      // normal completion; the EOF path only rejects incomplete done data.
+      const residualDoneStop = await collect(consume(new Response(
+        'event: output\ndata: {"response":"complete answer"}\n\n'
+        + 'event: done\ndata: {"finish_reason":"stop"}',
+      )))
+      assert.equal(residualDoneStop.at(-1).reason.kind, 'stop', 'trae: a complete residual done remains stop')
+      assert.ok(residualDoneStop.some(row => row.type === 'block-end'
+        && row.block.type === 'text' && row.block.text === 'complete answer'), 'trae: a complete residual done keeps the text')
+      // A bare `done` separated by a real blank line keeps its old semantics.
+      const bareDone = await collect(consume(new Response(
+        'event: output\ndata: {"response":"bare done answer"}\n\n'
+        + 'event: done\n\n',
+      )))
+      assert.equal(bareDone.at(-1).reason.kind, 'stop', 'trae: a blank-line separated bare done remains stop')
+      // The last event may arrive without its trailing blank line; it must still
+      // be parsed and dispatched instead of being dropped with the buffer.
+      const residualText = await collect(consume(new Response(
+        'event: output\ndata: {"response":"hello "}\n\n'
+        + 'event: output\ndata: {"response":"tail"}',
+      )))
+      assert.equal(assemble(residualText).find(block => block.type === 'text')?.text, 'hello tail',
+        'trae: a final event without a blank line is kept')
+      assert.equal(residualText.at(-1).reason.kind, 'max-tokens', 'trae: the residual text event still ends in a cut')
+      // A `done` whose JSON is cut mid-object must not prove completion.
+      const halfDone = await collect(consume(new Response(
+        'event: output\ndata: {"response":"cut before done json"}\n\n'
+        + 'event: done\ndata: {"finish_reason":"st',
+      )))
+      assert.equal(halfDone.at(-1).reason.kind, 'max-tokens', 'trae: a half done JSON is a cut')
+      assert.ok(halfDone.some(row => row.type === 'block-end'
+        && row.block.type === 'text' && row.block.text === 'cut before done json'), 'trae: a half done JSON keeps the text')
+      // A bare `done` without a real blank line and without data cannot prove
+      // completion either; only the normal blank-line path accepts it.
+      const eofBareDone = await collect(consume(new Response(
+        'event: output\ndata: {"response":"cut before bare done"}\n\n'
+        + 'event: done',
+      )))
+      assert.equal(eofBareDone.at(-1).reason.kind, 'max-tokens', 'trae: an EOF bare done without data is a cut')
+      assert.ok(eofBareDone.some(row => row.type === 'block-end'
+        && row.block.type === 'text' && row.block.text === 'cut before bare done'), 'trae: an EOF bare done keeps the text')
+      // `null` is parseable JSON but is not an object. The tail check must run
+      // before the shared parser, which would throw while reading its fields.
+      const nullDone = await collect(consume(new Response(
+        'event: output\ndata: {"response":"cut before null done"}\n\n'
+        + 'event: done\ndata: null',
+      )))
+      assert.equal(nullDone.at(-1).reason.kind, 'max-tokens', 'trae: a null done data is a cut')
+      assert.ok(nullDone.some(row => row.type === 'block-end'
+        && row.block.type === 'text' && row.block.text === 'cut before null done'), 'trae: a null done keeps the text')
+      // With no content block, the same invalid tail done remains an empty
+      // response rather than a crash or a max-tokens cut.
+      const metadataNullDone = await collect(consume(new Response(
+        'event: metadata\ndata: {"conversation_id":"fixture"}\n\n'
+        + 'event: done\ndata: null',
+      )))
+      assert.equal(metadataNullDone.at(-1).reason.kind, 'error', 'trae: metadata plus a null done is an empty response')
+      assert.equal(metadataNullDone.at(-1).reason.failure.code, 'EMPTY_RESPONSE')
+      // The residual event can be split across reads, including a multi-byte
+      // character; the decoder must not lose or corrupt it at EOF.
+      const splitBytes = new TextEncoder().encode('event: output\ndata: {"response":"\u5206\u7247"}')
+      const splitAt = splitBytes.length - 3
+      const splitTail = await collect(consume(new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(splitBytes.slice(0, splitAt))
+          controller.enqueue(splitBytes.slice(splitAt))
+          controller.close()
+        },
+      }))))
+      assert.equal(assemble(splitTail).find(block => block.type === 'text')?.text, '\u5206\u7247',
+        'trae: a split residual event is decoded whole')
+      assert.equal(splitTail.at(-1).reason.kind, 'max-tokens', 'trae: a split residual event still reports the cut')
+      // A residual `done` must be parsed too: without it the tool call below
+      // would be reported as max-tokens (no finish reason) instead of tool-calls.
+      const residualDone = await collect(consume(new Response(
+        'event: output\ndata: {"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{}"}}]}\n\n'
+        + 'event: done\ndata: {"finish_reason":"tool_calls"}',
+      )))
+      assert.equal(residualDone.at(-1).reason.kind, 'tool-calls', 'trae: a residual done sets the finish reason')
+      // Only metadata (no content block) is still an empty response, not a cut.
+      const metadataOnly = await collect(consume(new Response(
+        'event: metadata\ndata: {"conversation_id":"fixture"}\n\n',
+      )))
+      assert.equal(metadataOnly.at(-1).reason.kind, 'error', 'trae: metadata-only EOF is not a cut')
+      assert.equal(metadataOnly.at(-1).reason.failure.code, 'EMPTY_RESPONSE')
+    }
     console.log(`ok  source ${provider}: real host invariant/assembler, whitespace stop/tools/reasoning and preserved prose`)
   }
 

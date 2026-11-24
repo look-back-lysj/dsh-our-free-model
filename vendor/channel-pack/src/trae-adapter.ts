@@ -577,6 +577,24 @@ function traeCacheReadTokens(usage: Record<string, unknown>): number {
 }
 
 /**
+ * `raw` 是否为**完整的 JSON 对象**文本。
+ *
+ * 仅供 EOF 尾帧校验：EOF 补出的空行会让最后一条没有真实分隔符的事件进入
+ * 解析器，而 `parseTraeSSELine` 对空 data / 截断 JSON 仍返回事件名。若尾帧
+ * 是 `done`，必须确认 data 完整，否则不能把连接判为正常结束。
+ */
+function isCompleteJsonObject(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (trimmed.length === 0) return false
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+  } catch {
+    return false
+  }
+}
+
+/**
  * 组装模型选择器里展示的名字：`模型名 · 倍率`。
  *
  * ## 为什么倍率必须拼进 `name`
@@ -1323,6 +1341,14 @@ export class TraeAdapter extends LlmAdapter {
     const toolIds = new Map<number, string>()
     let buffer = ''
     let streamEnded = false
+    /**
+     * 连接是否在上游**没有**发送 `event:done` 的情况下自然结束（EOF）。
+     *
+     * ⚠️ 它不等于「正常结束」：只有 `event:done` 才能证明上游写完了整条回复。
+     * EOF 时仍要先冲刷解码器并解析最后一条可能缺结尾空行的事件，再用
+     * `!streamEnded` 把它归类为截断（见收尾的 `truncatedStream`）。
+     */
+    let eofReached = false
     let finishReason: 'stop' | 'tool_calls' | 'length' | undefined
     // SSE 事件累积状态（跨行累积 event + data）
     let currentEvent = ''
@@ -1365,8 +1391,19 @@ export class TraeAdapter extends LlmAdapter {
           }
           throw error
         }
-        if (result.done) break
-        buffer += decoder.decode(result.value, { stream: true })
+        if (result.done) {
+          // 上游直接关闭 body（没有 event:done）：先把 TextDecoder 里可能残留的
+          // 多字节序列冲刷出来，并补一个空行，让最后一条缺少结尾空行的
+          // `event:output` / `event:done` 仍按同一套 SSE 规则解析与分发。
+          //
+          // ⚠️ 这只是「把已到达的字节读完」，不代表正常结束；是否截断由收尾的
+          // `truncatedStream`（`!streamEnded`）判定，绝不能在这里伪造 done。
+          buffer += decoder.decode()
+          buffer += '\n\n'
+          eofReached = true
+        } else {
+          buffer += decoder.decode(result.value, { stream: true })
+        }
         let newline: number
         while ((newline = buffer.indexOf('\n')) !== -1) {
           const line = buffer.slice(0, newline)
@@ -1375,9 +1412,29 @@ export class TraeAdapter extends LlmAdapter {
           // 空行 = 事件分隔符 → 解析累积的事件
           if (line.trim().length === 0) {
             if (currentEvent.length > 0) {
-              const ev = parseTraeSSELine(currentEvent, currentData)
+              /**
+               * `eofReached` 为真时，缓冲区里只可能剩下没有真实空行分隔的尾帧
+               * （正常空行在前面的块循环里已经消费）。只有这种尾帧的 `done`
+               * 需要额外要求 data 是完整 JSON 对象；真实分隔的裸 done 仍按
+               * 原规则接受。
+               */
+              const isEofTail = eofReached
+              const rawEvent = currentEvent
+              const rawData = currentData
               currentEvent = ''
               currentData = ''
+              /**
+               * ⚠️ 校验必须**先于** `parseTraeSSELine`：`data: null` 能通过
+               * JSON.parse，但共享解析器随后会读取 `null.finish_reason` 并抛
+               * TypeError，后置校验根本来不及执行。无效尾帧按「未完成」跳过，
+               * 由收尾逻辑决定 max-tokens / EMPTY_RESPONSE。
+               */
+              if (isEofTail && rawEvent.trim() === 'done' && !isCompleteJsonObject(rawData)) {
+                // 事件帧本身证明上游已开工；但绝不能因此允许重放请求。
+                sawAnyUpstreamEvent = true
+                continue
+              }
+              const ev = parseTraeSSELine(rawEvent, rawData)
               if (ev === undefined) continue
               // 任何**可解析**的上游事件（含 metadata / timing_cost）都算
               // 「上游确实开工了」——此后绝不重放请求（见 sawAnyUpstreamEvent）。
@@ -1527,6 +1584,7 @@ export class TraeAdapter extends LlmAdapter {
                   break
                 }
                 case 'done':
+                  // EOF 尾帧的数据完整性已在上方进入共享解析器前校验。
                   if (ev.finishReason !== undefined) {
                     finishReason = ev.finishReason as 'stop' | 'tool_calls' | 'length'
                   }
@@ -1592,6 +1650,7 @@ export class TraeAdapter extends LlmAdapter {
           await reader.cancel().catch(() => {})
           break
         }
+        if (eofReached) break
       }
     } finally {
       await reader.cancel().catch(() => {})
@@ -1742,6 +1801,17 @@ export class TraeAdapter extends LlmAdapter {
       && toolOrder.length === 0
       && isProseTruncatedByStopString(emittedProse)
     /**
+     * 连接是否**被掐断**：既没有显式 `finish_reason` / `event:done`，也没有
+     * 命中更具体的死循环错误。
+     *
+     * `blockCount > 0` 是必要门禁：只有 metadata / 空内容的提前 EOF 继续走
+     * `EMPTY_RESPONSE`，不能被改写成 `max-tokens`。
+     *
+     * ⚠️ 收到 `event:done`（`streamEnded`）但没带 `finish_reason` 时仍按完成处理，
+     * 继续报 `stop` —— 上游已明确宣告结束，不能把正常 done 误判成截断。
+     */
+    const truncatedStream = finishReason === undefined && !streamEnded && blockCount > 0
+    /**
      * 思考死循环是否**是唯一的产出**（无正文、无工具调用）。
      */
     const reasoningLoopIsSoleOutput = loopDetected
@@ -1763,6 +1833,7 @@ export class TraeAdapter extends LlmAdapter {
         || (finishReason === undefined && toolOrder.length > 0)
         || argsTruncated
         || proseCutByStopString
+        || truncatedStream
         || (droppedUnnamedCalls && toolOrder.length === 0)
         ? { kind: 'max-tokens' as const }
         : finishReason === 'tool_calls' || toolOrder.length > 0
