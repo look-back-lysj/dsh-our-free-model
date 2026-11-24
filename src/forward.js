@@ -753,6 +753,26 @@ function openStreamHeaders(res, heartbeatMs = SSE_HEARTBEAT_MS) {
   startHeartbeat(res, heartbeatMs)
 }
 
+// The same issue #474 split used by stream.js: structurally incomplete JSON
+// (unclosed string or unbalanced brackets) is a cut, while a complete value
+// with malformed syntax remains a normal tool-call/schema error. Kept local to
+// this write surface because the exported stream reader does not expose it.
+function argumentsCutMidway(raw) {
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (const ch of raw) {
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+    } else if (ch === '"') inString = true
+    else if (ch === '{' || ch === '[') depth += 1
+    else if (ch === '}' || ch === ']') depth -= 1
+  }
+  return inString || depth !== 0
+}
+
 /** Per-request tool-wire state: harness block index → OpenAI tool index. */
 function createToolWire(body) {
   // The caller's own tool names, spelled as they declared them. A call whose
@@ -771,10 +791,14 @@ function createToolWire(body) {
   // client that cannot run the call.
   const classified = new Map()
   const held = new Map()
-  // Arguments leave `held` only when their call is admitted. A block-end must
-  // consult this set, not the presence of held fragments, when deciding
-  // whether the client has already received its arguments.
-  const forwardedArgs = new Set()
+  // Arguments leave `held` only when their call is admitted. Keep the exact
+  // bytes forwarded so a completed block can append only the unseen suffix; a
+  // held fragment is not evidence that the client received it.
+  const forwardedArgs = new Map()
+  const recordForwardedArgs = (blockIndex, args) => {
+    if (args === '') return
+    forwardedArgs.set(blockIndex, (forwardedArgs.get(blockIndex) ?? '') + args)
+  }
   return {
     /** Is this (restored) tool name one the caller can actually execute? */
     executable: name => !(FINGERPRINT_TOOLS.includes(name) && !declared.has(name)),
@@ -783,6 +807,13 @@ function createToolWire(body) {
       let assigned = slots.get(blockIndex)
       if (assigned === undefined) { assigned = nextIndex++; slots.set(blockIndex, assigned) }
       return assigned
+    },
+    /** Did any block leave structurally incomplete argument bytes on the wire? */
+    hasIncompleteArguments() {
+      for (const args of forwardedArgs.values()) {
+        if (args !== '' && argumentsCutMidway(args)) return true
+      }
+      return false
     },
     /**
      * Route one tool-call delta.
@@ -795,7 +826,7 @@ function createToolWire(body) {
       const name = typeof chunk.name === 'string' && chunk.name !== '' ? chunk.name : undefined
       if (verdict === true) {
         const args = chunk.argumentsDelta ?? ''
-        if (args !== '') forwardedArgs.add(blockIndex)
+        recordForwardedArgs(blockIndex, args)
         return { kind: 'forward', openAiIndex: this.indexOf(blockIndex), first: false, args }
       }
       if (name !== undefined) {
@@ -805,7 +836,7 @@ function createToolWire(body) {
         const parked = held.get(blockIndex)
         held.delete(blockIndex)
         const args = [...parked?.args ?? [], chunk.argumentsDelta ?? ''].join('')
-        if (args !== '') forwardedArgs.add(blockIndex)
+        recordForwardedArgs(blockIndex, args)
         return {
           kind: 'forward', openAiIndex: this.indexOf(blockIndex), first: true,
           id: chunk.id ?? parked?.id, name,
@@ -830,7 +861,7 @@ function createToolWire(body) {
      * looked at deltas, and the two consumers then disagreed about the same
      * turn.
      *
-     * @returns {{kind:'drop'} | {kind:'forward', openAiIndex:number, first:boolean, id?:string, name:string, args:string}}
+     * @returns {{kind:'drop', truncated?:boolean} | {kind:'forward', openAiIndex:number, first:boolean, id?:string, name:string, args:string}}
      */
     admitBlockEnd(block, blockIndex) {
       if (classified.get(blockIndex) === false) return { kind: 'drop' }
@@ -841,17 +872,19 @@ function createToolWire(body) {
       classified.set(blockIndex, true)
       const parked = held.get(blockIndex)
       held.delete(blockIndex)
-      // Arguments held before the name arrived were never put on the wire. Send
-      // those exact fragments with the opening now; when none were held, the
-      // completed block supplies the call. Only arguments already forwarded are
-      // omitted so a repeated block-end cannot double them.
-      const heldArgs = parked?.args.join('') ?? ''
-      const args = forwardedArgs.has(blockIndex)
-        ? ''
-        : heldArgs !== '' ? heldArgs : typeof block.arguments === 'string' ? block.arguments : ''
-      // A block-end is another admission path: remember the bytes it supplies
-      // so a repeated close for the same tool block is idempotent.
-      if (args !== '') forwardedArgs.add(blockIndex)
+      // The block owns the complete call. Held fragments were never forwarded,
+      // and bytes already sent are only usable when they are a prefix of that
+      // complete value. A mismatch cannot be repaired after the fact, so report
+      // it as truncation rather than announcing a corrupt call as executable.
+      const finalArgs = typeof block.arguments === 'string'
+        ? block.arguments
+        : parked?.args.join('') ?? ''
+      const forwarded = forwardedArgs.get(blockIndex)
+      if (forwarded !== undefined && !finalArgs.startsWith(forwarded)) {
+        return { kind: 'drop', truncated: true }
+      }
+      const args = forwarded === undefined ? finalArgs : finalArgs.slice(forwarded.length)
+      recordForwardedArgs(blockIndex, args)
       return {
         kind: 'forward', openAiIndex: this.indexOf(blockIndex), first: !namedEarlier,
         id: typeof block.id === 'string' && block.id !== '' ? block.id : parked?.id,
@@ -957,6 +990,7 @@ async function chatCompletions(req, res, complete, options = {}) {
   // blocks still needs one synthesized frame per call, and a slot whose deltas
   // were all dropped as decoys must not be re-opened by its block-end.
   const opened = new Set()
+  let toolArgsTruncated = false
   const emitAction = action => {
     if (action.kind === 'drop') return
     const key = action.openAiIndex
@@ -991,6 +1025,10 @@ async function chatCompletions(req, res, complete, options = {}) {
       // nothing to run. Emit the block through the same gate as a delta.
       if (chunk.type === 'block-end' && chunk.block?.type === 'tool-call') {
         const action = tools.admitBlockEnd(chunk.block, chunk.index)
+        if (action.truncated === true) {
+          toolArgsTruncated = true
+          return
+        }
         // `admitBlockEnd` suppresses arguments already forwarded, while still
         // allowing a block-end to supply arguments after a name-only delta.
         emitAction(action)
@@ -1028,8 +1066,13 @@ async function chatCompletions(req, res, complete, options = {}) {
   // filter: reporting `tool_calls` beside no callable tool — or beside one the
   // client cannot run — is how the truncation loop used to come back by the
   // streaming door.
-  const calls = executableCalls(outcome, tools)
-  const suppressed = suppressedOnlyNote(outcome, calls)
+  // Once bytes on the wire disagree with the completed block, the client can
+  // never reconstruct a runnable call. Suppress every call from the terminal
+  // status and use the existing max-tokens spelling for an incomplete turn.
+  const actualArgsCut = outcome.truncated === true && tools.hasIncompleteArguments()
+  const wireOutcome = toolArgsTruncated || actualArgsCut ? { ...outcome, toolCalls: [], truncated: true } : outcome
+  const calls = executableCalls(wireOutcome, tools)
+  const suppressed = suppressedOnlyNote(wireOutcome, calls)
   if (suppressed !== null) {
     // Same reasoning as the `outcome.error` branch above: the status line is
     // spent, so the only honest place left for the explanation is the stream.
@@ -1052,7 +1095,7 @@ async function chatCompletions(req, res, complete, options = {}) {
   }
   sendSse(res, {
     id, object: 'chat.completion.chunk', created, model,
-    choices: [{ index: 0, delta: {}, finish_reason: calls.length ? 'tool_calls' : outcome.truncated ? 'length' : 'stop' }],
+    choices: [{ index: 0, delta: {}, finish_reason: calls.length ? 'tool_calls' : wireOutcome.truncated ? 'length' : 'stop' }],
   })
   res.write('data: [DONE]\n\n')
   res.end()
