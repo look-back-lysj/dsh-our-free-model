@@ -485,6 +485,48 @@ await checkAsync('a 429 is a rate-limit failure with the retry hint', async () =
   assert.equal(failure?.providerRetryAfterMs, 2000)
 })
 
+await checkAsync('a 200 JSON refusal is classified by its error type, not retried as SERVER', async () => {
+  script = (req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ error: { message: 'fixture refusal', type: 'invalid_request_error' } }))
+  }
+  let failure
+  try {
+    await postAggregateStreamed({
+      config: liveConfig, providerId: 'cerebras', modelId: 'gpt-oss-120b',
+      body: { model: 'gpt-oss-120b', messages: [{ role: 'user', content: 'hi' }] },
+      onData: () => {},
+    })
+  } catch (error) { failure = error }
+  assert.equal(failure?.code, 'CLIENT_ERROR')
+  assert.equal(failure?.status, 200)
+})
+
+await checkAsync('a 200 refusal keeps dedicated judgements ahead of the generic type', async () => {
+  const cases = [
+    { type: 'invalid_request_error', message: 'Model is unavailable.', code: 'SERVER', unavailable: true },
+    { type: 'rate_limit_error', message: "OpenCode's free tier can only be used from within OpenCode.", code: 'LANE_LOCKED' },
+    { type: 'rate_limit_error', message: '需要 GitHub 授权，请先登录', reason: 'missing', code: 'AUTHORIZATION_REQUIRED' },
+  ]
+  for (const fixture of cases) {
+    script = (req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { type: fixture.type, message: fixture.message, ...(fixture.reason ? { reason: fixture.reason } : {}) } }))
+    }
+    let failure
+    try {
+      await postAggregateStreamed({
+        config: liveConfig, providerId: 'cerebras', modelId: 'gpt-oss-120b',
+        body: { model: 'gpt-oss-120b', messages: [{ role: 'user', content: 'hi' }] },
+        onData: () => {},
+      })
+    } catch (error) { failure = error }
+    assert.equal(failure?.code, fixture.code, `${fixture.type} + ${fixture.message}`)
+    if (fixture.unavailable !== undefined) assert.equal(failure?.unavailable, fixture.unavailable)
+    if (fixture.reason !== undefined) assert.equal(failure?.reason, fixture.reason)
+  }
+})
+
 await checkAsync('an HTML 200 body is the front proxy speaking, not a retryable fault', async () => {
   script = (req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' })

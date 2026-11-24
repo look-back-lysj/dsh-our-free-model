@@ -50,6 +50,46 @@ await test('classified stream failures survive every local forwarding protocol',
     assert.equal(classifyFailure(undefined, { error: { type: 'insufficient_quota', message: 'budget exhausted' } }).code, 'QUOTA_EXHAUSTED')
     assert.equal(classifyFailure(429, { error: { message: 'try later' } }, 2300).providerRetryAfterMs, 2300)
   })
+  await t.test('an embedded error type classifies without a status to lean on', () => {
+    for (const status of [200, undefined]) {
+      assert.equal(classifyFailure(status, { error: { type: 'invalid_request_error', message: 'fixture refusal' } }).code, 'CLIENT_ERROR')
+      assert.equal(classifyFailure(status, { error: { type: 'authentication_error', message: 'fixture refusal' } }).code, 'INVALID_CREDENTIAL')
+      assert.equal(classifyFailure(status, { error: { type: 'rate_limit_error', message: 'fixture refusal' } }).code, 'RATE_LIMIT')
+    }
+    // The status branches keep their existing reading, including 401 and 429.
+    assert.equal(classifyFailure(401, { error: { type: 'invalid_request_error', message: 'bad key' } }).code, 'INVALID_CREDENTIAL')
+    assert.equal(classifyFailure(401, { error: { type: 'authentication_error', message: 'bad key' } }).code, 'INVALID_CREDENTIAL')
+    assert.equal(classifyFailure(429, { error: { type: 'rate_limit_error', message: 'slow down' } }).code, 'RATE_LIMIT')
+    assert.equal(classifyFailure(408, { error: { type: 'invalid_request_error', message: 'fixture refusal' } }).code, 'SERVER')
+    assert.equal(classifyFailure(425, { error: { type: 'invalid_request_error', message: 'fixture refusal' } }).code, 'SERVER')
+    // The dedicated branches stay ahead of the new type mapping.
+    assert.equal(classifyFailure(200, { error: { type: 'permission_error', message: 'refused' } }).code, 'PERMISSION_DENIED')
+    assert.equal(classifyFailure(200, { error: { type: 'RegionError', message: 'excluded' } }).code, 'REGION_BLOCKED')
+    assert.equal(classifyFailure(200, { error: { type: 'FreeTierError', message: 'client gate' } }).code, 'LANE_LOCKED')
+    assert.equal(classifyFailure(200, { error: { type: 'AuthorizationRequired', message: 'login' } }).code, 'AUTHORIZATION_REQUIRED')
+    assert.equal(classifyFailure(200, { error: { type: 'ModelError', message: 'gone' } }).code, 'SERVER')
+    assert.equal(classifyFailure(200, { error: { type: 'FreeUsageLimitError', message: 'spent' } }).code, 'RATE_LIMIT')
+    assert.equal(classifyFailure(200, { error: { type: 'insufficient_quota', message: 'spent' } }).code, 'QUOTA_EXHAUSTED')
+    assert.equal(classifyFailure(401, { error: { message: '<!doctype html><html>blocked</html>' } }).code, 'CLIENT_ERROR')
+    // A generic type must not outrank a dedicated type or description that
+    // arrives in the same envelope.
+    const unavailable = classifyFailure(200, { error: { type: 'invalid_request_error', message: 'Model is unavailable.' } })
+    assert.equal(unavailable.code, 'SERVER')
+    assert.equal(unavailable.unavailable, true)
+    assert.equal(classifyFailure(201, { error: { type: 'rate_limit_error', message: "OpenCode's free tier can only be used from within OpenCode." } }).code, 'LANE_LOCKED')
+    const authorization = classifyFailure(undefined, { error: { type: 'rate_limit_error', message: '需要 GitHub 授权，请先登录', reason: 'missing' } })
+    assert.equal(authorization.code, 'AUTHORIZATION_REQUIRED')
+    assert.equal(authorization.reason, 'missing')
+    // Every 2xx and null classifies by the embedded type; a 5xx never does.
+    for (const status of [null, 201]) {
+      assert.equal(classifyFailure(status, { error: { type: 'invalid_request_error', message: 'fixture refusal' } }).code, 'CLIENT_ERROR')
+      assert.equal(classifyFailure(status, { error: { type: 'authentication_error', message: 'fixture refusal' } }).code, 'INVALID_CREDENTIAL')
+      assert.equal(classifyFailure(status, { error: { type: 'rate_limit_error', message: 'fixture refusal' } }).code, 'RATE_LIMIT')
+    }
+    for (const type of ['invalid_request_error', 'authentication_error', 'rate_limit_error']) {
+      assert.equal(classifyFailure(500, { error: { type, message: 'fixture refusal' } }).code, 'SERVER', `500 ${type} keeps its retryable reading`)
+    }
+  })
   await t.test('fragmented UTF-8, BOM, CRLF and multiline data retain complete payloads', async () => {
     const frames = []
     const payload = '\uFEFF: heartbeat\r\n\r\ndata: {"text":\r\ndata: "你好"}\r\n\r\ndata: [DONE]\r\n\r\n'
@@ -86,6 +126,33 @@ await test('classified stream failures survive every local forwarding protocol',
     controller.abort()
     await assert.rejects(result, error => error.code === 'ABORTED')
     assert.equal(cancelled, true)
+  })
+  await t.test('an in-stream invalid_request_error is a client failure, not a retryable server one', async () => {
+    async function* frames() {
+      yield JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'fixture refusal' } })
+    }
+    await assert.rejects(
+      async () => { for await (const chunk of readStream(frames(), 'chat', new Map())) void chunk },
+      error => error.code === 'CLIENT_ERROR' && error.type === 'invalid_request_error',
+    )
+  })
+  await t.test('in-stream generic types leave dedicated judgements in front', async () => {
+    const cases = [
+      { type: 'invalid_request_error', message: 'Model is unavailable.', code: 'SERVER', unavailable: true },
+      { type: 'rate_limit_error', message: "OpenCode's free tier can only be used from within OpenCode.", code: 'LANE_LOCKED' },
+      { type: 'rate_limit_error', message: '需要 GitHub 授权，请先登录', reason: 'missing', code: 'AUTHORIZATION_REQUIRED' },
+    ]
+    for (const fixture of cases) {
+      async function* frames() {
+        yield JSON.stringify({ type: 'error', error: { type: fixture.type, message: fixture.message, ...(fixture.reason ? { reason: fixture.reason } : {}) } })
+      }
+      await assert.rejects(
+        async () => { for await (const chunk of readStream(frames(), 'chat', new Map())) void chunk },
+        error => error.code === fixture.code
+          && (fixture.unavailable === undefined || error.unavailable === fixture.unavailable)
+          && (fixture.reason === undefined || error.reason === fixture.reason),
+      )
+    }
   })
   for (const wire of ['chat', 'messages', 'responses']) await t.test(`${wire}: named tool metadata reports progress once without argument deltas`, async () => {
     const event = name => wire === 'chat'
