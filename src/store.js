@@ -337,11 +337,49 @@ export function validateModelVisibility(patch) {
   return result
 }
 
-export function isModelHidden(entry, settings) {
-  return (Array.isArray(settings?.hiddenModelIds) && settings.hiddenModelIds.includes(entry.id))
-    || (settings?.hideFreeModels === true && (!entry.channel || entry.channel === 'anonymous' || entry.channel === 'kilo'
+/**
+ * Build one lookup index from a settings snapshot and the directory's family
+ * map. Stored ids are deduplicated in their original order. Only ids the
+ * directory has qualified enter a family bucket; every stored id remains
+ * available for exact matching, including rows absent from the current catalog.
+ */
+export function buildModelVisibility(settings, familyKeysById = new Map()) {
+  const storedIds = new Set()
+  const familyKeys = familyKeysById !== null && typeof familyKeysById?.get === 'function' ? familyKeysById : new Map()
+  const hiddenIdsByFamily = new Map()
+  for (const id of Array.isArray(settings?.hiddenModelIds) ? settings.hiddenModelIds : []) {
+    if (!validHiddenModelId(id) || storedIds.has(id)) continue
+    storedIds.add(id)
+    const family = familyKeys.get(id)
+    if (family === null || family === undefined) continue
+    const ids = hiddenIdsByFamily.get(family) ?? []
+    ids.push(id)
+    hiddenIdsByFamily.set(family, ids)
+  }
+  return { storedIds, familyKeysById: familyKeys, hiddenIdsByFamily }
+}
+
+/** Stored hidden ids belonging to this row, never the whole settings array. */
+export function hiddenIdsFor(entry, visibility) {
+  const id = typeof entry?.id === 'string' ? entry.id : ''
+  if (id === '' || !(visibility?.storedIds instanceof Set)) return []
+  const family = visibility.familyKeysById?.get(id)
+  if (family !== null && family !== undefined) {
+    return [...(visibility.hiddenIdsByFamily?.get(family) ?? [])]
+  }
+  return visibility.storedIds.has(id) ? [id] : []
+}
+
+/** Does one of the two group switches hide this row, independently of saved ids? */
+export function isModelHiddenByGroup(entry, settings) {
+  return (settings?.hideFreeModels === true && (!entry?.channel || entry.channel === 'anonymous' || entry.channel === 'kilo'
       || (entry.channel === 'combo' && Array.isArray(entry.lanes) && entry.lanes.length > 0 && entry.lanes.every(lane => lane === 'free'))))
-    || (settings?.hideEacModels === true && entry.channel === 'eac')
+    || (settings?.hideEacModels === true && entry?.channel === 'eac')
+}
+
+export function isModelHidden(entry, settings, visibility) {
+  return hiddenIdsFor(entry, visibility ?? buildModelVisibility(settings)).length > 0
+    || isModelHiddenByGroup(entry, settings)
 }
 
 export const STATS_INITIAL = {

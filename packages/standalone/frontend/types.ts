@@ -6,6 +6,7 @@ export interface Model {
   channel: string
   routable: boolean
   hiddenByUser?: boolean
+  hiddenIds?: string[]
   hiddenByGroup?: boolean
   vision?: boolean
   reasoning?: boolean

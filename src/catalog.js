@@ -24,6 +24,73 @@ import { baseModelId, isResponsesModel } from './upstream.js'
 const ALWAYS_FREE = new Set(['big-pickle', 'union-alpha', 'space-bunny-free'])
 
 /**
+ * Cross-namespace names the directory itself has identified as one model. The
+ * keys are full model names after removing one terminal `-free`/`:free` marker;
+ * values are the shared family key. Names without an entry stay namespaced, so
+ * `vendor-a/shared` and `vendor-b/shared` are not merged by a coincidence of
+ * their last path segment.
+ */
+const FAMILY_ALIASES = new Map([
+  ...['beam', 'opencode/beam', 'reflection/beam'].map(name => [name, 'beam']),
+  ...['nemotron-3.5-lightning', 'opencode/nemotron-3.5-lightning', 'nvidia/nemotron-3.5-lightning']
+    .map(name => [name, 'nemotron-3.5-lightning']),
+  ...['nemotron-3.5-super-vl', 'opencode/nemotron-3.5-super-vl', 'nvidia/nemotron-3.5-super-vl']
+    .map(name => [name, 'nemotron-3.5-super-vl']),
+  ...['big-pickle', 'opencode/big-pickle'].map(name => [name, 'big-pickle']),
+  ...['gpt-oss-20b', 'openai/gpt-oss-20b'].map(name => [name, 'gpt-oss-20b']),
+  ...['longcat-2.5', 'opencode/longcat-2.5'].map(name => [name, 'longcat-2.5']),
+  ...['tidepool-alpha', 'opencode/tidepool-alpha'].map(name => [name, 'tidepool-alpha']),
+  ...['iceman', 'opencode/iceman'].map(name => [name, 'iceman']),
+  ...['flint-40b', 'opencode/flint-40b'].map(name => [name, 'flint-40b']),
+])
+
+function terminalFreeName(id) {
+  const value = typeof id === 'string' ? id : ''
+  if (value === '') return null
+  const terminal = value.slice(value.lastIndexOf('/') + 1)
+  if (terminal === '' || terminal === 'free') return null
+  const stripped = terminal.endsWith('-free') || terminal.endsWith(':free') ? value.slice(0, -5) : value
+  const strippedTerminal = stripped.slice(stripped.lastIndexOf('/') + 1)
+  if (stripped === '' || strippedTerminal === '' || strippedTerminal === 'free') return null
+  return stripped
+}
+
+function catalogFamilyKey(id) {
+  const name = terminalFreeName(id)
+  return name === null ? null : (FAMILY_ALIASES.get(name) ?? name)
+}
+
+/**
+ * The full ids the current directory says may participate in family matching.
+ *
+ * Only the free, anonymous, EAC and Kilo rows are candidates. A full id also
+ * produced by an aggregate, subscription, combo, extension or other row is
+ * ambiguous and therefore omitted: both rows fall back to exact matching. The
+ * map's value is the family key, or null when a terminal `free` segment means
+ * the id may only be matched exactly. This function reads candidate rows alone;
+ * settings, provider prefixes and registries cannot add or remove eligibility.
+ *
+ * @param {Array<object>} candidates - rows before the runtime's id dedupe
+ * @returns {ReadonlyMap<string, string|null>}
+ */
+export function catalogFamilyKeys(candidates) {
+  const eligible = new Set()
+  const foreign = new Set()
+  for (const entry of Array.isArray(candidates) ? candidates : []) {
+    const id = typeof entry?.id === 'string' ? entry.id : ''
+    if (id === '') continue
+    const lane = entry.channel
+    if (lane === undefined || lane === null || lane === 'anonymous' || lane === 'eac' || lane === 'kilo') eligible.add(id)
+    else foreign.add(id)
+  }
+  const keys = new Map()
+  for (const id of eligible) {
+    if (!foreign.has(id)) keys.set(id, catalogFamilyKey(id))
+  }
+  return keys
+}
+
+/**
  * Local capability baseline. `contextWindow`/`maxOutput` are the provider's
  * published capacities; `vision` is what this lane actually accepted under a
  * direct image-input probe, not what a model card claims.
