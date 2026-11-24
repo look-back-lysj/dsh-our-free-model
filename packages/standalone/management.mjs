@@ -260,8 +260,10 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
   const summary = () => {
     const state = runtime.state()
     const available = stores.availability.get()
-    const routable = routableModelIds(state)
-    for (const row of channels?.publicModelRows?.() ?? []) routable.add(row.id)
+    // The full service reports routability per concrete row. A core runtime
+    // only reports routable ids, so keep this management module usable by both.
+    const routableRows = state.routableRows
+    const routableIds = routableRows === undefined ? routableModelIds(state) : null
     return {
       ...info(),
       channels: channels?.state(),
@@ -286,7 +288,7 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
         id: entry.id, name: entry.name, channel: entry.channel ?? 'anonymous',
         vision: entry.vision === true, reasoning: entry.reasoning === true || (entry.reasoning !== null && typeof entry.reasoning === 'object'),
         contextWindow: entry.contextWindow ?? entry.context_window, maxOutput: entry.maxOutput ?? entry.max_tokens,
-        routable: routable.has(entry.id),
+        routable: routableRows === undefined ? routableIds.has(entry.id) : routableRows.has(entry),
         hiddenByUser: isModelHidden(entry, state.settings, state.visibility),
         hiddenIds: hiddenIdsFor(entry, state.visibility),
         hiddenByGroup: isModelHiddenByGroup(entry, state.settings),

@@ -104,9 +104,48 @@ const login = async body => {
   return setCookie.split(';')[0]
 }
 
+async function verifyCoreManagementSummary() {
+  const { createModelRuntime, createRuntimeStores } = await import('../src/core/runtime.js')
+  const { createManagement } = await import('../packages/standalone/management.mjs')
+  const coreDataDir = path.join(scratch, 'core-management')
+  const coreKey = 'isolated-core-management-summary'
+  const logger = { warn() {} }
+  const stores = createRuntimeStores({ dataDir: coreDataDir, logger })
+  stores.settings.update({ enabled: true, exposeRegionModels: true, combos: [], forwardKey: coreKey })
+  const runtime = createModelRuntime({ ...stores, logger })
+  const management = createManagement({
+    stores, runtime,
+    info: () => ({ version: 'core-composition-test', dataDir: coreDataDir, networkMode: 'fixture' }),
+  })
+  const server = http.createServer((req, res) => {
+    void management.handleRequest(req, res).then(handled => {
+      if (!handled) { res.writeHead(404); res.end() }
+    })
+  })
+  try {
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    management.setPort(server.address().port)
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/management/summary`, {
+      headers: { authorization: `Bearer ${coreKey}` }, signal: AbortSignal.timeout(10000),
+    })
+    assert.equal(response.status, 200)
+    const summary = await response.json()
+    assert.equal(summary.catalog.length, 6)
+    assert.equal(summary.catalog.every(row => row.routable === true), true)
+  } finally {
+    server.closeAllConnections()
+    await new Promise(resolve => server.close(resolve))
+    await management.dispose()
+    runtime.dispose()
+    stores.dispose()
+  }
+}
+
 try {
   await check('macOS 与 Windows 固定启动器安全引用路径，令牌只经 stdin 复制', verifyLoginLaunchers)
   await check('本机取令牌入口限制来源与参数，拒绝并发且不泄露密钥或创建会话', verifyLoginTerminal)
+  await check('真实核心运行时与管理直接组合时摘要仍可读取', verifyCoreManagementSummary)
   service = await startStandalone({ dataDir, port: 0, refresh: false, logger: { warn() {} } })
   key = getKey()
   await check('页面资源本地提供且不包含密钥，健康接口仍兼容', async () => {
