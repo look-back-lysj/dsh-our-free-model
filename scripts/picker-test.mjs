@@ -16,7 +16,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { EventEmitter } from 'node:events'
+import { EventEmitter, getEventListeners } from 'node:events'
 import { chatFrames, callRoute, FakeRequest, fakeContext, freePort, stubUpstream, until } from './lib/fake-kernel.mjs'
 
 let failures = 0
@@ -310,18 +310,36 @@ check('the settings route accepts the desktop relay before connection appears',
   (await callRoute(api(), 'GET', '/api/our-free-model/summary', undefined, desktopHeaders)).status, 200)
 const events = routes.find(route => route.kind === 'exact' && route.path === '/api/our-free-model/events')?.handler
 if (events === undefined) throw new Error('events route was not registered')
-const eventReq = Object.assign(new EventEmitter(), new FakeRequest('GET', '/api/our-free-model/events', undefined, desktopHeaders))
-let eventStatus = 0
-let eventBody = ''
-const eventRes = Object.assign(new EventEmitter(), {
-  writeHead(status) { eventStatus = status },
-  write(text) { eventBody += text },
-  end() {},
-})
-events(eventReq, eventRes)
-check('the events route accepts the desktop relay', eventStatus, 200)
-check('and sends the initial snapshot', eventBody.includes('event: hello'), true)
-eventRes.emit('close')
+function openEvents(peer) {
+  const req = Object.assign(new EventEmitter(), new FakeRequest('GET', '/api/our-free-model/events', undefined, desktopHeaders))
+  const res = Object.assign(new EventEmitter(), {
+    status: 0,
+    body: '',
+    writableEnded: false,
+    writeHead(status) { this.status = status },
+    write(text) { this.body += text },
+    end() { this.writableEnded = true },
+  })
+  events(req, res, peer)
+  return res
+}
+const desktopEvents = openEvents()
+check('the events route accepts the desktop relay', desktopEvents.status, 200)
+check('and sends the initial snapshot', desktopEvents.body.includes('event: hello'), true)
+desktopEvents.emit('close')
+
+const peerController = new AbortController()
+const peer = { principal: { kind: 'owner' }, signal: peerController.signal }
+const ownerEvents = openEvents(peer)
+check('a Host-admitted owner receives an open event stream', [ownerEvents.status, ownerEvents.writableEnded], [200, false])
+peerController.abort()
+check('ending the owner Peer closes its event stream', ownerEvents.writableEnded, true)
+
+const disconnectController = new AbortController()
+const disconnectedEvents = openEvents({ ...peer, signal: disconnectController.signal })
+check('an event stream listens to its owner Peer', getEventListeners(disconnectController.signal, 'abort').length, 1)
+disconnectedEvents.emit('close')
+check('a disconnected event stream releases the Peer listener', getEventListeners(disconnectController.signal, 'abort').length, 0)
 
 ctx.__services.connection.admit = () => ({ rejection: 401 })
 ctx.__mountService('connection')

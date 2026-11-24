@@ -1523,7 +1523,7 @@ export function apply(ctx, config) {
       res.end(rejection === 401 ? 'unauthorized' : rejection === 503 ? 'admission unavailable' : 'forbidden')
       return
     }
-    push.attach(req, res, helloPayload())
+    push.attach(req, res, helloPayload(), peer?.signal)
   }
 
   function helloPayload() {
@@ -2945,7 +2945,7 @@ export function createPushHub({ logger = console, heartbeatMs = HEARTBEAT_MS } =
      * Adopt one request as a live event stream. The route handler has already
      * passed the trust fence; this takes ownership of the response.
      */
-    attach(req, res, hello) {
+    attach(req, res, hello, signal) {
       res.writeHead(200, {
         'content-type': 'text/event-stream; charset=utf-8',
         'cache-control': 'no-cache, no-transform',
@@ -2957,11 +2957,20 @@ export function createPushHub({ logger = console, heartbeatMs = HEARTBEAT_MS } =
       clients.add(res)
       startHeartbeat()
       const drop = () => {
+        req.off('close', drop)
+        res.off('close', drop)
+        signal?.removeEventListener('abort', onAbort)
         clients.delete(res)
         if (clients.size === 0) stopHeartbeat()
       }
-      req.on('close', drop)
-      res.on('close', drop)
+      const onAbort = () => {
+        drop()
+        if (!res.writableEnded && !res.destroyed) res.end()
+      }
+      req.once('close', drop)
+      res.once('close', drop)
+      if (signal?.aborted) onAbort()
+      else signal?.addEventListener('abort', onAbort, { once: true })
     },
     sendTo(res, event, data) {
       if (res.writableEnded === true || res.destroyed === true) { clients.delete(res); return }
