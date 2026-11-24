@@ -215,14 +215,22 @@ check('it keeps the refused models rather than dropping them', (await advertised
 check('and the refusals are on record for the user to read', probeStore().results['deepseek-v4-flash-free']?.state, 'unavailable')
 const visibleId = 'space-bunny-free'
 const beforeVisibilityEvents = ctx.__captured.events.filter(event => event === 'emit:llm/adapters-updated').length
-const hiddenSave = await callRoute(api(), 'POST', '/api/our-free-model/settings', { hiddenModelIds: [visibleId, visibleId], hideEacModels: true })
+const hiddenSave = await callRoute(api(), 'POST', '/api/our-free-model/settings', {
+  hiddenModelIds: [visibleId, visibleId, 'unrelated-hidden-probe'], hideEacModels: true,
+})
 check('picker visibility settings save successfully', hiddenSave.status, 200)
-check('hidden ids are canonical and persisted', JSON.parse(fs.readFileSync(path.join(scratch, 'our-free-model', 'settings.json'), 'utf8')).hiddenModelIds, [visibleId])
+check('hidden ids are canonical and persisted', JSON.parse(fs.readFileSync(path.join(scratch, 'our-free-model', 'settings.json'), 'utf8')).hiddenModelIds, [visibleId, 'unrelated-hidden-probe'])
 check('refusedAll never restores an explicitly hidden model', (await advertised(ROUTE_MAIN)).includes(visibleId), false)
 check('visibility changes broadcast topology invalidation',
   ctx.__captured.events.filter(event => event === 'emit:llm/adapters-updated').length > beforeVisibilityEvents, true)
 const hiddenSummary = (await callRoute(api(), 'GET', '/api/our-free-model/summary')).json
 check('management keeps hidden rows with a recovery marker', hiddenSummary.catalog.find(row => row.id === visibleId)?.hiddenByUser, true)
+check('a hidden row carries only the stored ids in its model family',
+  hiddenSummary.catalog.find(row => row.id === visibleId)?.hiddenIds, [visibleId])
+check('and never receives the whole settings blacklist',
+  hiddenSummary.catalog.find(row => row.id === visibleId)?.hiddenIds.includes('unrelated-hidden-probe'), false)
+check('an unhidden row carries an empty family list',
+  hiddenSummary.catalog.find(row => row.id === 'mimo-v2.6-flash-free')?.hiddenIds, [])
 check('a hidden id still resolves for history', (await adapter.resolveModel(ROUTE_MAIN, visibleId)).id, visibleId)
 for (const patch of [null, [], { hiddenModelIds: [null] }, { hiddenModelIds: [''] }, { hideEacModels: 1 }, { hideFreeModels: 'true' }, { enabled: false, hiddenModelIds: [3] }]) {
   check('invalid visibility patch is refused atomically', (await callRoute(api(), 'POST', '/api/our-free-model/settings', patch)).status, 400)

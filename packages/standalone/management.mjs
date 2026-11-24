@@ -2,10 +2,11 @@ import { modelAvailability } from '../../src/model-test.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import { buildStats } from '../../src/core/stats.js'
+import { routableModelIds } from '../../src/core/completion.js'
 import { generateKey } from '../../src/forward.js'
 import { structuralRejection } from '../../src/trust.js'
 import { openLoginTerminal } from './login-terminal.mjs'
-import { publicModelVisibility, validateModelVisibility, isModelHidden } from '../../src/store.js'
+import { publicModelVisibility, validateModelVisibility, isModelHidden, isModelHiddenByGroup, hiddenIdsFor } from '../../src/store.js'
 import { freeLaneExitSnapshot, clearLaneExits, laneProxyEcho } from '../../src/egress.js'
 import { createWorkbench } from './workbench.mjs'
 import { createProviderManagement } from './providers.mjs'
@@ -259,7 +260,8 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
   const summary = () => {
     const state = runtime.state()
     const available = stores.availability.get()
-    const routable = new Set(runtime.publicModelRows().map(entry => entry.id))
+    const routable = routableModelIds(state)
+    for (const row of channels?.publicModelRows?.() ?? []) routable.add(row.id)
     return {
       ...info(),
       channels: channels?.state(),
@@ -285,8 +287,9 @@ export function createManagement({ stores, runtime, channels, eac, subscriptions
         vision: entry.vision === true, reasoning: entry.reasoning === true || (entry.reasoning !== null && typeof entry.reasoning === 'object'),
         contextWindow: entry.contextWindow ?? entry.context_window, maxOutput: entry.maxOutput ?? entry.max_tokens,
         routable: routable.has(entry.id),
-        hiddenByUser: isModelHidden(entry, state.settings),
-        hiddenByGroup: isModelHidden(entry, { ...state.settings, hiddenModelIds: [] }),
+        hiddenByUser: isModelHidden(entry, state.settings, state.visibility),
+        hiddenIds: hiddenIdsFor(entry, state.visibility),
+        hiddenByGroup: isModelHiddenByGroup(entry, state.settings),
         ...measured, availability: measured.availabilitySource === 'listing' ? 'listed' : measured.availability,
       }) }),
     }

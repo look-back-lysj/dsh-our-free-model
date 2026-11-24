@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url'
 import { externalUrl, openExternal } from './src/open-external.js'
 import { findBunExecutable } from './src/bun-fetch.js'
 import { ROUTE_LABELS, ROUTE_MAIN, ROUTE_REGION } from './src/adapter.js'
-import { DATA_DIR_NAME, resolveDshHome, publicModelVisibility, validateModelVisibility, isModelHidden } from './src/store.js'
+import { DATA_DIR_NAME, resolveDshHome, publicModelVisibility, validateModelVisibility, isModelHidden, isModelHiddenByGroup, hiddenIdsFor } from './src/store.js'
 import { isEacEntry, isKiloEntry } from './src/catalog.js'
 import { STATE } from './src/probe.js'
 import { generateKey, rankLanAddresses, startForwardServer, startLanRelay } from './src/forward.js'
@@ -2842,8 +2842,9 @@ function buildSummary(deps) {
   return {
     catalog: state.catalog.map(entry => ({
       ...entry,
-      hiddenByUser: isModelHidden(entry, state.settings),
-      hiddenByGroup: isModelHidden(entry, { ...state.settings, hiddenModelIds: [] }),
+      hiddenByUser: isModelHidden(entry, state.settings, state.visibility),
+      hiddenIds: hiddenIdsFor(entry, state.visibility),
+      hiddenByGroup: isModelHiddenByGroup(entry, state.settings),
       ...modelAvailability(entry.id, snapshot, unprobed(entry), { bunAvailable: bunReady }),
       // What each rung of the effort menu will really put on the wire for this
       // model, so the page never shows a 32K "output ceiling" beside a call that
