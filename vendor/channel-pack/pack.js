@@ -38777,8 +38777,9 @@ function parseTraeSSELine(eventName, dataLine) {
   return ev;
 }
 function normalizeTraeToolCalls(calls) {
-  return calls.map((call) => {
-    if (typeof call !== "object" || call === null) return call;
+  const normalized = [];
+  for (const call of calls) {
+    if (typeof call !== "object" || call === null) continue;
     const c = { ...call };
     if (typeof c.function_call === "object" && c.function_call !== null) {
       c.function = { ...c.function_call };
@@ -38789,8 +38790,9 @@ function normalizeTraeToolCalls(calls) {
       delete fn.namespace;
       delete fn.partial_arguments;
     }
-    return c;
-  });
+    normalized.push(c);
+  }
+  return normalized;
 }
 
 // vendor/channel-pack/src/trae-errors.ts

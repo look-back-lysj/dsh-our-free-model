@@ -1006,6 +1006,40 @@ async function verifySourceRegressions({ ctx, adapters, call, creds }) {
       assert.equal(nullOutputFramed.at(-1).reason.kind, 'stop', 'trae: a framed null output does not throw')
       assert.ok(nullOutputFramed.some(row => row.type === 'block-end'
         && row.block.type === 'text' && row.block.text === 'before framed null'), 'trae: a framed null output keeps the text')
+      // A null entry inside tool_calls must not abort the stream. An EOF tail
+      // with only that entry is still a cut and keeps the earlier text.
+      const nullToolTail = await collect(consume(new Response(
+        'event: output\ndata: {"response":"before null tool"}\n\n'
+        + 'event: output\ndata: {"tool_calls":[null]}',
+      )))
+      assert.equal(nullToolTail.at(-1).reason.kind, 'max-tokens', 'trae: a null tool entry in the EOF tail is a cut')
+      assert.ok(nullToolTail.some(row => row.type === 'block-end'
+        && row.block.type === 'text' && row.block.text === 'before null tool'), 'trae: a null tool tail keeps the text')
+      assert.equal(nullToolTail.some(row => row.type === 'block-end' && row.block.type === 'tool-call'), false)
+      // The valid sibling in the same frame must survive the null entry.
+      const mixedTool = { index: 4, id: 'audit_call', function: { name: 'inspect', arguments: '{"query":"\u96ea"}' } }
+      const mixedToolTail = await collect(consume(new Response(
+        'event: output\ndata: {"response":"before mixed tools"}\n\n'
+        + 'event: output\ndata: ' + JSON.stringify({ tool_calls: [null, mixedTool] }),
+      )))
+      assert.equal(mixedToolTail.at(-1).reason.kind, 'max-tokens', 'trae: a mixed null/valid tool tail is a cut')
+      assert.ok(mixedToolTail.some(row => row.type === 'block-end'
+        && row.block.type === 'text' && row.block.text === 'before mixed tools'), 'trae: mixed tool tail keeps the text')
+      const mixedToolBlocks = mixedToolTail.filter(row => row.type === 'block-end' && row.block.type === 'tool-call')
+        .map(row => row.block)
+      assert.equal(mixedToolBlocks.length, 1, 'trae: the valid tool survives a null sibling')
+      assert.deepEqual({ id: mixedToolBlocks[0].id, name: mixedToolBlocks[0].name, arguments: mixedToolBlocks[0].arguments },
+        { id: 'audit_call', name: 'inspect', arguments: '{"query":"\u96ea"}' })
+      // A normally separated null-only tool frame must also be harmless.
+      const framedNullTool = await collect(consume(new Response(
+        'event: output\ndata: {"response":"before framed null tool"}\n\n'
+        + 'event: output\ndata: {"tool_calls":[null]}\n\n'
+        + 'event: done\ndata: {"finish_reason":"stop"}\n\n',
+      )))
+      assert.equal(framedNullTool.at(-1).reason.kind, 'stop', 'trae: a framed null tool entry does not throw')
+      assert.ok(framedNullTool.some(row => row.type === 'block-end'
+        && row.block.type === 'text' && row.block.text === 'before framed null tool'), 'trae: framed null tool keeps the text')
+      assert.equal(framedNullTool.some(row => row.type === 'block-end' && row.block.type === 'tool-call'), false)
       // The residual event can be split across reads, including a multi-byte
       // character; the decoder must not lose or corrupt it at EOF.
       const splitBytes = new TextEncoder().encode('event: output\ndata: {"response":"\u5206\u7247"}')
