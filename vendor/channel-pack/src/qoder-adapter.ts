@@ -775,33 +775,39 @@ export class QoderAdapter extends LlmAdapter {
         metadata: { ...this.product.clientMetadata },
         host: this.product.encryptedInferBase,
       })
-      return client.prepareInfer({
-        modelKey: options.model,
-        userText,
-        ...(systemText !== undefined ? { systemText } : {}),
-        isReasoning: fallback?.supportsThinking ?? false,
-        history,
-        // 工具定义：这是模型**唯一**能学到函数 schema 的通道，
-        // 缺了它模型只能用正文 XML 臆造调用（真实缺陷）。
-        tools,
-        ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
-        ...(options.reasoningEffort !== undefined ? { reasoningEffort: options.reasoningEffort } : {}),
-        ...(fallback?.supportsImage !== undefined ? { isVl: fallback.supportsImage } : {}),
-        // 官方 `model_config` 的 display_name / max_input_tokens 必须带上。
-        ...(fallback?.name !== undefined ? { displayName: fallback.name } : {}),
-        ...(fallback?.contextWindow !== undefined ? { maxInputTokens: fallback.contextWindow } : {}),
-        // ⚠️ **`business` 必填**，否则服务端把请求路由到错误的后端节点。
-        //
-        // 实测（2026-09-20）：不带 `business` 时 `qfmodel`（Qwen3.8-Flash）
-        // 恒落到故障节点 `oa_qwen-plus-2025-04-28` 并返回
-        // `[FAIL]node:... msg:Execution failed`；补上 `business` 后立即正常
-        // （其余模型如 `qmodel_38max` 恰好不受影响，故早期排查易误判为
-        // 「该模型服务端故障」）。`agent` / `sec_scan` 等取值都能通。
-        //
-        // 源码依据：`MPi(A) { return A === 'sec_scan' ? 'security' : 'default' }`
-        // —— 服务端按 `business.type` 选路由池，缺字段会走异常分支。
-        business: { type: 'agent' },
-      })
+      // 准备好的请求是纯数据（url/headers/body 字符串），返回时 wasm context
+      // 已经没用了 —— 必须在 finally 里释放，否则它的分配每请求泄漏一次（#826）。
+      try {
+        return client.prepareInfer({
+          modelKey: options.model,
+          userText,
+          ...(systemText !== undefined ? { systemText } : {}),
+          isReasoning: fallback?.supportsThinking ?? false,
+          history,
+          // 工具定义：这是模型**唯一**能学到函数 schema 的通道，
+          // 缺了它模型只能用正文 XML 臆造调用（真实缺陷）。
+          tools,
+          ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+          ...(options.reasoningEffort !== undefined ? { reasoningEffort: options.reasoningEffort } : {}),
+          ...(fallback?.supportsImage !== undefined ? { isVl: fallback.supportsImage } : {}),
+          // 官方 `model_config` 的 display_name / max_input_tokens 必须带上。
+          ...(fallback?.name !== undefined ? { displayName: fallback.name } : {}),
+          ...(fallback?.contextWindow !== undefined ? { maxInputTokens: fallback.contextWindow } : {}),
+          // ⚠️ **`business` 必填**，否则服务端把请求路由到错误的后端节点。
+          //
+          // 实测（2026-09-20）：不带 `business` 时 `qfmodel`（Qwen3.8-Flash）
+          // 恒落到故障节点 `oa_qwen-plus-2025-04-28` 并返回
+          // `[FAIL]node:... msg:Execution failed`；补上 `business` 后立即正常
+          // （其余模型如 `qmodel_38max` 恰好不受影响，故早期排查易误判为
+          // 「该模型服务端故障」）。`agent` / `sec_scan` 等取值都能通。
+          //
+          // 源码依据：`MPi(A) { return A === 'sec_scan' ? 'security' : 'default' }`
+          // —— 服务端按 `business.type` 选路由池，缺字段会走异常分支。
+          business: { type: 'agent' },
+        })
+      } finally {
+        client.dispose()
+      }
     }
 
     // 3. 发送（⚠️ 头必须原样透传：Authorization 是 WASM 生成的

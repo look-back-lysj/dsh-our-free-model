@@ -340,10 +340,9 @@ interface Glue {
   readString: (ptr: number, len: number) => string
   /** 写字符串进 wasm 内存，返回指针（长度经 `lastLength` 传出）。 */
   writeString: (text: string) => number
-  /** 释放 `writeString` 分配的缓冲区（`__wbindgen_free` 的配对）。 */
-  freeString: (ptr: number, len: number) => void
   /**
-   * 分配若干输入串、执行调用、无论成败都释放它们。
+   * 分配若干输入串、执行调用。**不释放**这些缓冲区 —— Rust 侧按所有权接管
+   * 入参，JS 再 free 会双重释放（见实现处的注释与 #895）。
    * 回调收到的指针与长度按入参顺序排列。
    */
   withStrings: <T>(texts: string[], invoke: (pointers: number[], lengths: number[]) => T) => T
@@ -425,32 +424,31 @@ async function createGlue(): Promise<Glue> {
     return ptr
   }
   /**
-   * Free a buffer `writeString` allocated.
+   * Allocate, run, and hand every input buffer to the wasm export.
    *
-   * `__wbindgen_export2` is wasm-bindgen's `__wbindgen_malloc` and
-   * `__wbindgen_export4` its `__wbindgen_free` — the same pair `callString`
-   * already uses for the *returned* buffer. Every input buffer `writeString`
-   * hands to a wasm export leaked, because nothing ever called the free half
-   * (issue #826: the glue grew the wasm heap on each call and the leak was
-   * proportional to argument size). The wasm side copies the bytes it needs
-   * during the call, so freeing right after it returns is safe.
+   * ⚠️ **Do not free these buffers from JS.** The Qoder exports take their
+   * `&str` parameters **by ownership** (wasm-bindgen passes `String`, and the
+   * Rust side drops it before returning), so the wasm already released them.
+   * Freeing again here is a double free: the Rust allocator panics and the
+   * whole instantiation traps with `RuntimeError: unreachable`, which surfaces
+   * at the plugin boundary as a bare `unreachable` error with no code — the
+   * request never leaves the machine (issue #895).
+   *
+   * Evidence (measured with the shipped `qoder-auth-wasm.wasm`, no account
+   * needed): calling an export and then freeing the same pointer panics every
+   * time, while handing 100 × 200 KiB inputs to an export leaves the heap flat
+   * — the wasm does reclaim them. The real per-request growth issue #826 saw
+   * came from `QoderContext` / `RequestResult` (see `dispose` and
+   * `prepareInfer`), not from input buffers.
    */
-  const freeString = (ptr: number, len: number): void => {
-    if (ptr) exports.__wbindgen_export4!(ptr, len, 1)
-  }
-  /** Allocate, run, and always free every input buffer written for the call. */
   const withStrings = <T>(texts: string[], invoke: (pointers: number[], lengths: number[]) => T): T => {
     const pointers: number[] = []
     const lengths: number[] = []
-    try {
-      for (const text of texts) {
-        pointers.push(writeString(text))
-        lengths.push(lastLength)
-      }
-      return invoke(pointers, lengths)
-    } finally {
-      for (let i = 0; i < pointers.length; i++) freeString(pointers[i], lengths[i])
+    for (const text of texts) {
+      pointers.push(writeString(text))
+      lengths.push(lastLength)
     }
+    return invoke(pointers, lengths)
   }
   const callString = (invoke: (stack: number) => void): string => {
     let ptr = 0
@@ -567,7 +565,6 @@ async function createGlue(): Promise<Glue> {
     view,
     readString,
     writeString,
-    freeString,
     withStrings,
     lastLength: () => lastLength,
     heapObject,
@@ -636,6 +633,9 @@ export class QoderEncryptedInfer {
     private readonly host: string,
   ) {}
 
+  /** `dispose()` 是否已释放 context —— 防止重复释放（wasm 侧不保证幂等）。 */
+  private disposed = false
+
   /** 创建客户端（会调 WASM 构造 `QoderContext`）。 */
   static async create(options: {
     user: QoderWasmUserInfo
@@ -696,12 +696,6 @@ export class QoderEncryptedInfer {
       }),
     )
 
-    const headerMap = g.takeObject(g.exports.requestresult_headers!(result))
-    const headers: Record<string, string> = {}
-    if (headerMap instanceof Map) {
-      for (const [k, v] of headerMap) headers[String(k)] = String(v)
-    }
-
     const readResultString = (invoke: (stack: number, ptr: number) => void): string => {
       let out = ''
       let outPtr = 0
@@ -718,17 +712,46 @@ export class QoderEncryptedInfer {
         // The url/body buffers are allocated by the wasm side and never freed
         // by it — `callString` already frees its return value the same way, and
         // leaving these leaked grew the heap once per inference request (#826).
-        g.freeString(outPtr, outLen)
+        //
+        // ⚠️ Inline `__wbindgen_export4` rather than a `g.freeString` helper:
+        // the helper was for **input** buffers, whose ownership sits in Rust, and
+        // freeing those traps (#895). A *returned* buffer is owned by JS here,
+        // exactly like `callString`'s finally block, so freeing is correct.
+        if (outPtr) g.exports.__wbindgen_export4!(outPtr, outLen, 1)
       }
       return out
     }
 
-    return {
-      // ⚠️ 参数顺序：(栈指针, ptr) —— 与直觉相反
-      url: readResultString((stack, ptr) => g.exports.requestresult_url!(stack, ptr)),
-      headers,
-      body: readResultString((stack, ptr) => g.exports.requestresult_body!(stack, ptr)),
+    try {
+      const headerMap = g.takeObject(g.exports.requestresult_headers!(result))
+      const headers: Record<string, string> = {}
+      if (headerMap instanceof Map) {
+        for (const [k, v] of headerMap) headers[String(k)] = String(v)
+      }
+      return {
+        // ⚠️ 参数顺序：(栈指针, ptr) —— 与直觉相反
+        url: readResultString((stack, ptr) => g.exports.requestresult_url!(stack, ptr)),
+        headers,
+        body: readResultString((stack, ptr) => g.exports.requestresult_body!(stack, ptr)),
+      }
+    } finally {
+      g.exports.__wbg_requestresult_free!(result)
     }
+  }
+
+  /**
+   * Release the wasm `QoderContext` this client owns.
+   *
+   * A client is built per request and then dropped (`buildRequest` in the
+   * adapter), so without this the context's wasm allocations are never
+   * returned — measured at ~3 KiB of linear memory per request, which only ever
+   * grows (issue #826). `qodercontext_new` and `__wbg_qodercontext_free` exist
+   * as a pair for exactly this. Idempotent: a second call is a no-op.
+   */
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    if (this.context) this.g.exports.__wbg_qodercontext_free!(this.context)
   }
 }
 
