@@ -1507,23 +1507,23 @@ export function apply(ctx, config) {
   // server was busy serving it.
   ctx.inject(['webServer'], scoped => {
     const server = scoped.webServer
-    scoped.effect(() => server.register({ kind: 'prefix', path: '/api/our-free-model', handler: api }), 'our-free-model: api routes')
+    scoped.effect(() => server.register({ kind: 'prefix', path: '/api/our-free-model', auth: 'required', handler: api }), 'our-free-model: api routes')
     // The events stream is an exact route: exact dispatch outranks the prefix, so
     // the hub's handler owns the socket while every other path still lands on the
     // JSON API.
-    scoped.effect(() => server.register({ kind: 'exact', path: '/api/our-free-model/events', handler: eventsRoute }), 'our-free-model: events stream')
+    scoped.effect(() => server.register({ kind: 'exact', path: '/api/our-free-model/events', auth: 'required', handler: eventsRoute }), 'our-free-model: events stream')
     logger.info?.('our-free-model: settings API mounted at /api/our-free-model')
   })
 
   /** Adopt one request as a live push stream, after the trust fence. */
-  function eventsRoute(req, res) {
-    const rejection = rejectionFor(req, fenceConnection, logAdmissionRejection('events'))
+  function eventsRoute(req, res, peer) {
+    const rejection = rejectionFor(req, fenceConnection, logAdmissionRejection('events'), peer)
     if (rejection !== undefined) {
       res.writeHead(rejection, { 'content-type': 'text/plain; charset=utf-8' })
       res.end(rejection === 401 ? 'unauthorized' : rejection === 503 ? 'admission unavailable' : 'forbidden')
       return
     }
-    push.attach(req, res, helloPayload())
+    push.attach(req, res, helloPayload(), peer?.signal)
   }
 
   function helloPayload() {
@@ -1899,14 +1899,14 @@ function perfSnapshot(root, fetchImpl) {
 }
 
 export function createApiRoutes(deps) {
-  return async function handler(req, res) {
+  return async function handler(req, res, peer) {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const marker = '/api/our-free-model'
     const markerAt = url.pathname.indexOf(marker)
     const apiPrefix = markerAt >= 0 ? url.pathname.slice(0, markerAt + marker.length) : marker
     const routePath = url.pathname.slice(markerAt >= 0 ? apiPrefix.length : 0).replace(/\/+$/, '') || '/'
     const method = String(req.method ?? 'GET').toUpperCase()
-    const rejection = rejectionFor(req, deps.connection, deps.onAdmissionRejection)
+    const rejection = rejectionFor(req, deps.connection, deps.onAdmissionRejection, peer)
     const send = (status, payload) => {
       const body = JSON.stringify(payload)
       res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
@@ -2945,7 +2945,7 @@ export function createPushHub({ logger = console, heartbeatMs = HEARTBEAT_MS } =
      * Adopt one request as a live event stream. The route handler has already
      * passed the trust fence; this takes ownership of the response.
      */
-    attach(req, res, hello) {
+    attach(req, res, hello, signal) {
       res.writeHead(200, {
         'content-type': 'text/event-stream; charset=utf-8',
         'cache-control': 'no-cache, no-transform',
@@ -2957,11 +2957,20 @@ export function createPushHub({ logger = console, heartbeatMs = HEARTBEAT_MS } =
       clients.add(res)
       startHeartbeat()
       const drop = () => {
+        req.off('close', drop)
+        res.off('close', drop)
+        signal?.removeEventListener('abort', onAbort)
         clients.delete(res)
         if (clients.size === 0) stopHeartbeat()
       }
-      req.on('close', drop)
-      res.on('close', drop)
+      const onAbort = () => {
+        drop()
+        if (!res.writableEnded && !res.destroyed) res.end()
+      }
+      req.once('close', drop)
+      res.once('close', drop)
+      if (signal?.aborted) onAbort()
+      else signal?.addEventListener('abort', onAbort, { once: true })
     },
     sendTo(res, event, data) {
       if (res.writableEnded === true || res.destroyed === true) { clients.delete(res); return }
