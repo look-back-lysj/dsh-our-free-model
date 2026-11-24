@@ -121,6 +121,8 @@ const suites = [
   ['wire-tool-alias', 'wire-tool-alias-test.mjs', []],
   ['opencode-parity', 'opencode-parity-test.mjs', []],
   ['free-lane-wire', 'free-lane-wire-test.mjs', []],
+  ['lane-exit', 'lane-exit-test.mjs', []],
+  ['o2a-assets', 'o2a-assets-test.mjs', []],
   ['freetier-gate', 'freetier-gate-test.mjs', []],
   ['free-lane-quota', 'free-lane-quota-test.mjs', []],
   ['extensions', 'extensions-test.mjs', []],
