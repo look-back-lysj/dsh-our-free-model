@@ -38750,6 +38750,7 @@ function parseTraeSSELine(eventName, dataLine) {
   } catch {
     return { event };
   }
+  if (raw === null) return { event };
   throwIfModelQueued(raw);
   const ev = { event };
   switch (event) {

@@ -1727,12 +1727,17 @@ export function parseTraeSSELine(eventName: string, dataLine: string): TraeSSEEv
   const event = eventName.trim()
   if (dataLine.length === 0) return { event }
 
-  let raw: Record<string, unknown>
+  let raw: Record<string, unknown> | null
   try {
-    raw = JSON.parse(dataLine) as Record<string, unknown>
+    raw = JSON.parse(dataLine) as Record<string, unknown> | null
   } catch {
     return { event }
   }
+
+  // `JSON.parse("null")` succeeds but returns null. The field reads below
+  // (`response` / `finish_reason` / `code` / `message`) would throw on it;
+  // treat it like an unparseable payload and expose only the event name.
+  if (raw === null) return { event }
 
   throwIfModelQueued(raw)
   const ev: TraeSSEEvent = { event }

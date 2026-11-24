@@ -974,6 +974,38 @@ async function verifySourceRegressions({ ctx, adapters, call, creds }) {
       )))
       assert.equal(metadataNullDone.at(-1).reason.kind, 'error', 'trae: metadata plus a null done is an empty response')
       assert.equal(metadataNullDone.at(-1).reason.failure.code, 'EMPTY_RESPONSE')
+      // The shared parser must ignore a null payload instead of dereferencing
+      // it. An EOF-tail output after text keeps the text and reports the cut.
+      const nullOutputTail = await collect(consume(new Response(
+        'event: output\ndata: {"response":"before null output"}\n\n'
+        + 'event: output\ndata: null',
+      )))
+      assert.equal(nullOutputTail.at(-1).reason.kind, 'max-tokens', 'trae: a null output tail is a cut')
+      assert.ok(nullOutputTail.some(row => row.type === 'block-end'
+        && row.block.type === 'text' && row.block.text === 'before null output'), 'trae: a null output tail keeps the text')
+      // No prior content: the same null output stays an empty response.
+      const nullOutputOnly = await collect(consume(new Response(
+        'event: output\ndata: null',
+      )))
+      assert.equal(nullOutputOnly.at(-1).reason.kind, 'error', 'trae: a lone null output is an empty response')
+      assert.equal(nullOutputOnly.at(-1).reason.failure.code, 'EMPTY_RESPONSE')
+      // A null error payload is ignored by the shared parser and leaves the
+      // existing empty-response semantics intact.
+      const nullError = await collect(consume(new Response(
+        'event: error\ndata: null',
+      )))
+      assert.equal(nullError.at(-1).reason.kind, 'error', 'trae: a null error payload is not thrown')
+      assert.equal(nullError.at(-1).reason.failure.code, 'EMPTY_RESPONSE')
+      // A real blank line means the normal (non-EOF) path; it must use the
+      // same guard and finish normally.
+      const nullOutputFramed = await collect(consume(new Response(
+        'event: output\ndata: {"response":"before framed null"}\n\n'
+        + 'event: output\ndata: null\n\n'
+        + 'event: done\ndata: {"finish_reason":"stop"}\n\n',
+      )))
+      assert.equal(nullOutputFramed.at(-1).reason.kind, 'stop', 'trae: a framed null output does not throw')
+      assert.ok(nullOutputFramed.some(row => row.type === 'block-end'
+        && row.block.type === 'text' && row.block.text === 'before framed null'), 'trae: a framed null output keeps the text')
       // The residual event can be split across reads, including a multi-byte
       // character; the decoder must not lose or corrupt it at EOF.
       const splitBytes = new TextEncoder().encode('event: output\ndata: {"response":"\u5206\u7247"}')
