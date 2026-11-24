@@ -51,7 +51,7 @@ try {
     await page.locator('.pd-row').first().waitFor()
     const result = await api('/providers')
     assert.equal(result.status, 200)
-    assert.equal(result.body.registry.length, 76)
+    assert.equal(result.body.registry.length, 77)
     assert.ok(await page.getByText('未连接', { exact: true }).count() > 0)
     await page.screenshot({ path: path.join(outputDir, 'providers-desktop.png'), fullPage: true })
   })

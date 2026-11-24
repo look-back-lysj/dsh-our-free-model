@@ -75,14 +75,14 @@ try {
   await page.screenshot({ path: path.join(root, 'native-tauri-agents.png') })
   await nav('聚合渠道')
   await page.locator('.pd-row').first().waitFor()
-  assert.equal(await page.locator('.pd-row').count(), 76)
+  assert.equal(await page.locator('.pd-row').count(), 77)
   await page.screenshot({ path: path.join(root, 'native-tauri-providers.png') })
   await nav('EAC router')
   await page.getByLabel('搜索渠道').waitFor()
   assert.equal(await page.locator('.channel-directory-row').count(), 10)
   await page.screenshot({ path: path.join(root, 'native-tauri-router.png') })
   assert.deepEqual(errors, [])
-  console.log('Native Tauri + bundled Node + actual WebView2: logged in, 6 clients, 76 providers, 10 retained EAC router channels; screenshots .verify/workbench-tauri')
+  console.log('Native Tauri + bundled Node + actual WebView2: logged in, 6 clients, 77 providers, 10 retained EAC router channels; screenshots .verify/workbench-tauri')
 } finally {
   await browser?.close().catch(() => {})
   if (app?.exitCode === null) {
