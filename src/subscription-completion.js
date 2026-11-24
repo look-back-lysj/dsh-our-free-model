@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { fromOpenAiMessages, foldForwardOutcome } from './core/completion.js'
+import { fromOpenAiMessages, foldForwardOutcome } from './core.js'
 import { toChatMessages, toClaudeMessages, toResponseInput, toToolDefs, repairToolPairing } from './messages.js'
 import { readStream, finishReason } from './stream.js'
 import { readSse } from './http.js'
@@ -251,14 +251,30 @@ async function* streamLines(source, signal, timeoutMs, translate) {
 }
 
 /**
+ * Protocol identifiers, not credential carriers. A tool's `name` is what the
+ * host matches against its registry, so redacting it turns a valid call into
+ * `unknown tool` — the exact symptom #877 reported.
+ */
+const IDENTITY_KEYS = new Set(['type', 'blockType', 'kind', 'name', 'id', 'toolName', 'callId', 'toolCallId'])
+
+/**
  * Match only actual credential prefixes. The trie is linear in credential
  * length; each block retains at most one prefix, never its ordinary output.
- * At a block boundary an unresolved prefix is masked conservatively so that
- * concatenating different blocks or content types cannot reconstruct a secret.
+ *
+ * A trailing unfinished prefix is *held* across chunks so a secret split over
+ * a boundary is still caught. At a block boundary the fragment is masked so
+ * that two blocks cannot concatenate back into a secret — except when it is a
+ * single character, which carries no secret material: the attacker would still
+ * have to guess every remaining character. Releasing that one character is
+ * what fixes issue #877. Every magpie gateway key begins with `s`, so the trie
+ * root had a single child and every ordinary word ending in `s` was treated as
+ * the start of a key: `list_agents` became `list_agent[redacted]` (failing
+ * every tool call with `unknown tool`) and any message ending in `s` lost it.
  */
 function credentialRedactor(secrets, deliver) {
   const root = { children: new Map(), terminal: false }
   for (const secret of new Set(secrets)) {
+    if (typeof secret !== 'string' || secret === '') continue
     let node = root
     for (let i = 0; i < secret.length; i++) {
       const char = secret[i]
@@ -276,8 +292,14 @@ function credentialRedactor(secrets, deliver) {
         if (node.terminal) matched = end - position
       }
       if (end === text.length && node.children.size && end > position) {
-        if (final) return { output: output + '[redacted]', pending: '' }
-        return { output, pending: text.slice(position) }
+        // The walk reached the end of the text with a prefix still open, so a
+        // longer secret may continue in the next chunk. This takes priority
+        // over `matched`: stopping at the shorter terminal would emit the rest
+        // of the longer secret as ordinary text.
+        const held = text.slice(position)
+        if (!final) return { output, pending: held }
+        output += held.length === 1 ? held : '[redacted]'
+        return { output, pending: '' }
       }
       if (matched) { output += '[redacted]'; position += matched }
       else { output += text[position++] }
@@ -285,7 +307,7 @@ function credentialRedactor(secrets, deliver) {
     return { output, pending: '' }
   }
   const clean = (value, key) => {
-    if (['type', 'blockType', 'kind'].includes(key)) return value
+    if (IDENTITY_KEYS.has(key)) return value
     if (typeof value === 'string') return scan(value, true).output
     if (Array.isArray(value)) return value.map(clean)
     if (object(value)) return Object.fromEntries(Object.entries(value).map(([name, child]) => [name, clean(child, name)]))
@@ -335,10 +357,11 @@ function credentialRedactor(secrets, deliver) {
  * complete() may override it with request.resolveImage for that call only.
  */
 export function createSubscriptionRuntime({
-  subscriptions, stats, logger, fetchImpl = globalThis.fetch, timeoutMs = 300000, resolveImage,
+  subscriptions, stats, logger, fetchImpl = globalThis.fetch, timeoutMs = 300000, resolveImage, onPayload,
 } = {}) {
   if (typeof subscriptions?.list !== 'function' || typeof subscriptions?.resolve !== 'function'
     || (resolveImage !== undefined && typeof resolveImage !== 'function')
+    || (onPayload !== undefined && typeof onPayload !== 'function')
     || typeof fetchImpl !== 'function' || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000) {
     throw failure('INVALID_INPUT', 'Invalid subscription runtime configuration', 400)
   }
@@ -388,6 +411,14 @@ export function createSubscriptionRuntime({
         onChunk(chunk)
         foldForwardOutcome(outcome, chunk)
       })
+      let body = payload
+      if (onPayload !== undefined) {
+        // The owner's body seam (enhancement extensions on the magpie lane):
+        // fail-open is the hook's own contract, but a broken seam itself must
+        // not take the turn down — ship the unmodified payload instead.
+        try { body = (await Promise.race([onPayload(payload, { provider: config.provider, model: config.model, wire: config.wire }), interrupted])) ?? payload }
+        catch (error) { if (controller.signal.aborted) throw error }
+      }
       try {
         response = await Promise.race([fetchImpl(config.endpoint, {
           method: 'POST', redirect: 'error', signal: controller.signal,
@@ -395,7 +426,7 @@ export function createSubscriptionRuntime({
             ...config.headers, 'content-type': 'application/json', accept: 'text/event-stream',
             ...(config.provider === 'gemini' ? { 'user-agent': `GeminiCLI/0.61.0/${config.model} (${process.platform}; ${process.arch}; terminal)` } : {}),
           },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(body),
         }), interrupted])
       } catch (error) {
         if (controller.signal.aborted) throw error

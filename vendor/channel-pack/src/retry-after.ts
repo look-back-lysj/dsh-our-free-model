@@ -33,15 +33,18 @@ export function parseRetryAfterMs(
   raw: string | null | undefined,
   nowMs: number = Date.now(),
 ): number | undefined {
-  if (raw === undefined || raw === null || raw === '') return undefined
-  // 先按「秒」判：只放行非负有限数（`Number('')` 已是 0，但空串在上面就返回了）。
-  const seconds = Number(raw)
-  // ⚠️ **负数按「无效」处理，不能落到 `Date.parse`**：`Date.parse('-5')` 是**合法**的
-  // （被当成 ISO 年份），于是 `at - now` 是个巨大负数、被 `Math.max(0, …)` 抹成 0
-  // （=「立即解除」）—— 一个畸形的头就能让刚被限流的账号立刻被重选。
-  // 无效头一律返回 `undefined`（= 服务端没声明），由调用方退到保守的兜底。
-  if (Number.isFinite(seconds)) return seconds >= 0 ? Math.ceil(seconds * 1000) : undefined
-  const at = Date.parse(raw)
+  if (raw === undefined || raw === null) return undefined
+  const text = raw.trim()
+  if (text === '') return undefined
+  // Retry-After 的秒数形式只接受非负整数。`Number()` 会把 `0x2`、`1e2`、
+  // `1.5` 甚至 `-5` 都吃成数字；前两者会变成意外的等待时长，后两者再落到
+  // `Date.parse` 时还可能被当成年份。凡是「看起来像数字」的非法形态，都在
+  // 这里直接判为未声明，交给调用方使用保守兜底。
+  if (/^[+-]?\d/.test(text)) {
+    if (!/^\d+$/.test(text)) return undefined
+    return Math.ceil(Number(text) * 1000)
+  }
+  const at = Date.parse(text)
   return Number.isFinite(at) ? Math.max(0, at - nowMs) : undefined
 }
 

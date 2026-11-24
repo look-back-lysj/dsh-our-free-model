@@ -376,8 +376,55 @@ function userAgentWith(_attribution) {
   return CLIENT_UA
 }
 
+/**
+ * Whether a request body carries image parts.
+ *
+ * The free lane's gateway answers a share of image requests with a bare 5xx and
+ * an empty body, so the status says nothing about the cause. The image content
+ * is then the one fact the caller can act on (issue #549).
+ *
+ * Matched on the `type` spelling rather than one dialect's field name, because
+ * the three wires this repo speaks disagree: OpenAI says `image_url`, the
+ * harness says `input_image`, Messages says `image`.
+ */
+export function carriesImageContent(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : []
+  for (const message of messages) {
+    if (!Array.isArray(message?.content)) continue
+    for (const part of message.content) {
+      if (typeof part?.type === 'string' && part.type.includes('image')) return true
+    }
+  }
+  return false
+}
+
+/**
+ * The failure an empty 5xx body deserves.
+ *
+ * `classifyFailure` turns an empty body into the message `HTTP 502`, which tells
+ * the caller nothing: a gateway hiccup and a refusal of this exact request read
+ * identically, and #549's image requests land here about half the time. Say what
+ * is known — the hop that failed, and that the request carried images — and keep
+ * the retryability a 5xx implies. A 4xx with an empty body keeps going through
+ * `classifyFailure`, which already reads the status correctly.
+ */
+function emptyBodyFailure(status, retryAfterMs, imageContent) {
+  const hint = imageContent
+    ? ' — this request carried image content, and the model behind the gateway may not accept vision input'
+    : ''
+  return new UpstreamError(
+    `the gateway answered HTTP ${status} with an empty body: the failure is upstream of the model, not in this request${hint}`,
+    CODE.server,
+    { status, emptyBody: true, ...(retryAfterMs === undefined ? {} : { providerRetryAfterMs: retryAfterMs }) })
+}
+
 export async function postStreamed({ path, body, session, attributionUserAgent, signal, onData, timeoutMs = 300000 }) {
-  const headers = gatewayHeaders({ session: truncateSession(session), stream: true })
+  // The Messages wire carries the 2.x client's beta header (o2a/headers.js);
+  // the path is the only wire signal this layer sees. The project id derives
+  // from the same canonical session, so one conversation's retries,
+  // continuations and refreshes share one upstream quota bucket (PR #757).
+  const canonical = truncateSession(session)
+  const headers = gatewayHeaders({ session: canonical, project: canonical, stream: true, anthropic: path.includes('/messages') })
   headers['user-agent'] = userAgentWith(attributionUserAgent)
   let response
   try {
@@ -387,12 +434,24 @@ export async function postStreamed({ path, body, session, attributionUserAgent, 
     // `TimeoutError`/user Error rather than `AbortError` — testing the name alone
     // reported a cancelled turn as `TRANSPORT`, which is retryable.
     if (signal?.aborted === true || error?.name === 'AbortError') throw new UpstreamError('request aborted', CODE.aborted)
+    // A lane-configuration refusal (a missing Bun, an unusable proxy) is not an
+    // "upstream request failed": the sentence the lane wrote is already the
+    // actionable answer, so it ships unwrapped, with its flag intact for the
+    // surfaces that distinguish "fix your environment" from "upstream broke".
+    if (error?.laneConfig === true) {
+      throw new UpstreamError(String(error?.message ?? error), CODE.transport, { laneConfig: true })
+    }
     throw new UpstreamError(`our-free-model: upstream request failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
   }
 
   const setRetry = retryAfter(response.headers.get('retry-after'))
   if (!response.ok) {
     const text = await response.text().catch(() => '')
+    // An empty 5xx body is the case #549 is about: there is no envelope to
+    // classify, and `HTTP 502` is not an answer the caller can act on.
+    if (text.trim() === '' && response.status >= 500) {
+      throw emptyBodyFailure(response.status, setRetry, carriesImageContent(body))
+    }
     let payload
     try { payload = JSON.parse(text) } catch { payload = { error: { message: text.slice(0, 300) || `HTTP ${response.status}` } } }
     throw classifyFailure(response.status, payload, setRetry)
@@ -444,6 +503,16 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
   let data = []
   let rawJson = ''
   let deadline = Date.now() + timeoutMs
+  // Did this read carry anything a caller would call progress? A keepalive is a
+  // comment line (`: ping`), and SSE defines it as something to ignore — so it
+  // must not wind the idle clock. Before this witness existed, every read reset
+  // `deadline` unconditionally, so a gateway that pings every 10–15s kept a
+  // wedged, token-less turn alive indefinitely: the request never timed out, it
+  // just held a connection until the gateway itself gave up (#460). The witness
+  // is deliberately wider than "onData fired" — a large raw-JSON body or a
+  // multi-line event can spend several reads accumulating before anything is
+  // dispatched, and those reads are real progress.
+  let content = false
   let stopped = false
   const stop = () => {
     if (stopped) return
@@ -486,7 +555,10 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
     const payload = data.join('\n')
     data = []
     if (payload.trim() === '[DONE]') return true
-    if (payload !== '') onData(payload)
+    if (payload !== '') {
+      onData(payload)
+      content = true
+    }
     return false
   }
   const completeData = () => {
@@ -504,6 +576,7 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
       rawJson = ''
       if (payload?.error || payload?.type === 'error') throw classifyFailure(undefined, payload)
       onData(JSON.stringify(payload))
+      content = true
       return false
     }
     if (text === '') return dispatch()
@@ -515,6 +588,7 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
       // Compatible endpoints may omit blank separators between complete JSON events.
       if (completeData() && dispatch()) return true
       if (valueText.trim() === '[DONE]') { dispatch(); return true }
+      if (valueText !== '') content = true
       data.push(valueText)
     }
     return false
@@ -532,7 +606,16 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
         if (line(row)) return
         newline = buffer.indexOf('\n')
       }
-      deadline = Date.now() + timeoutMs
+      // A row still waiting for its newline counts as progress unless what has
+      // arrived so far is itself a comment: `: ping` split across two reads must
+      // not wind the clock, while a raw-JSON body or a half-arrived `data:` line
+      // must.
+      const pending = buffer.replace(/^\uFEFF/, '').replace(/\r$/, '')
+      if (pending.trim() !== '' && !pending.trimStart().startsWith(':')) content = true
+      if (content) {
+        content = false
+        deadline = Date.now() + timeoutMs
+      }
     }
     // Flush the decoder so a multi-byte character split over the last two chunks
     // is not silently dropped from the final payload.
@@ -552,7 +635,8 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
 
 /** Fetch a small JSON document from the gateway with the fingerprint headers. */
 export async function getJson(path, { session, attributionUserAgent, signal, timeoutMs = 15000 } = {}) {
-  const headers = gatewayHeaders({ session: truncateSession(session ?? ''), stream: false, accept: 'application/json' })
+  const canonical = truncateSession(session ?? '')
+  const headers = gatewayHeaders({ session: canonical, project: canonical, stream: false, accept: 'application/json' })
   headers['user-agent'] = userAgentWith(attributionUserAgent)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -577,5 +661,45 @@ export async function getJson(path, { session, attributionUserAgent, signal, tim
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener?.('abort', onCallerAbort)
+  }
+}
+
+/** Preserve classified failures across the three local forwarding protocols. */
+export function carryFailure(failure, kind = 'error') {
+  const source = failure && typeof failure === 'object' ? failure : {}
+  const code = kind === 'aborted' ? 'ABORTED' : source.code
+  const status = source.status ?? source.statusCode
+  return {
+    message: typeof source.message === 'string' && source.message ? source.message : kind === 'aborted' ? 'request aborted' : 'our free model failed the turn',
+    ...typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? { code } : {},
+    ...Number.isInteger(status) && status >= 400 && status <= 599 ? { status } : {},
+    ...Number.isFinite(source.providerRetryAfterMs) && source.providerRetryAfterMs > 0 ? { providerRetryAfterMs: source.providerRetryAfterMs } : {},
+  }
+}
+
+/** Wire error metadata; no arbitrary provider properties are forwarded. */
+export function forwardFailure(outcome, anthropic = false) {
+  const failure = carryFailure(outcome.failure ?? { message: String(outcome.error) })
+  const classes = {
+    INVALID_CREDENTIAL: [401, 'authentication_error'],
+    AUTHORIZATION_REQUIRED: [403, 'permission_error'],
+    LANE_LOCKED: [403, 'permission_error'],
+    REGION_BLOCKED: [403, 'permission_error'],
+    PERMISSION_DENIED: [403, 'permission_error'],
+    QUOTA_EXHAUSTED: [429, 'insufficient_quota'],
+    RATE_LIMIT: [429, 'rate_limit_error'],
+    CLIENT_ERROR: [400, 'invalid_request_error'],
+    ABORTED: [400, 'invalid_request_error'],
+    TIMEOUT: [504, 'server_error'],
+    EAC_UPSTREAM_FAILED: [502, 'server_error'],
+    NO_PROGRESS: [504, 'server_error'],
+  }
+  const byStatus = { 400: 'invalid_request_error', 401: 'authentication_error', 403: 'permission_error', 404: 'invalid_request_error', 429: 'rate_limit_error' }
+  const [fallbackStatus, type] = classes[failure.code] ?? [502, byStatus[failure.status] ?? 'server_error']
+  return {
+    status: failure.status ?? fallbackStatus,
+    error: { message: failure.message, type: anthropic && type === 'server_error' ? 'api_error' : type, ...(failure.code ? { code: failure.code } : {}) },
+    retryAfterMs: failure.providerRetryAfterMs,
+    classified: Boolean(failure.code || failure.status),
   }
 }

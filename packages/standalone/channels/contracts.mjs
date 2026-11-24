@@ -23,12 +23,19 @@ export class LlmError extends Error {
     super(message, options)
     this.name = 'LlmError'
     this.code = code
+    // `failure` is the host's structured verdict: the release tooling reads
+    // status and providerRetryAfterMs from it, not from the error itself.
+    if (options !== undefined) this.failure = options
   }
 }
 export const credentialRef = value => value
 export const ReasoningEffortId = value => value
 export const ToolCallId = value => value
 export const createUserMessage = value => ({ id: randomUUID(), role: 'user', ...value })
+export const createToolResultMessage = ({ callId, content, isError }) => ({
+  id: randomUUID(), role: 'tool', toolCallId: callId, content, isError,
+  source: { kind: 'tool', callId },
+})
 export const attributionHeaders = () => ({ 'user-agent': 'our-free-model-standalone' })
 export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
 export const EMPTY_RESPONSE_CODE = 'EMPTY_RESPONSE'

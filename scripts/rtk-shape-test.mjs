@@ -6,10 +6,10 @@
  * Run: node scripts/rtk-shape-test.mjs
  */
 import assert from 'node:assert/strict'
-import { compressRequest } from '../src/token-saver/rtk/index.js'
-import { autoDetectFilter } from '../src/token-saver/rtk/autodetect.js'
-import { grep } from '../src/token-saver/rtk/filters/grep.js'
-import { DETECT_WINDOW, MIN_COMPRESS_SIZE } from '../src/token-saver/rtk/constants.js'
+import { compressRequest } from '../src/token-saver/compact/index.js'
+import { autoDetectFilter } from '../src/token-saver/compact/autodetect.js'
+import { grep } from '../src/token-saver/compact/filters/grep.js'
+import { DETECT_WINDOW, MIN_COMPRESS_SIZE } from '../src/token-saver/compact/constants.js'
 
 let failures = 0
 let checks = 0

@@ -24,12 +24,16 @@
 import crypto from 'node:crypto'
 import https from 'node:https'
 import http from 'node:http'
+import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { Readable } from 'node:stream'
 // Web-stream adapter: http.js's readHead/readSse speak getReader(), so the
 // node:http response is converted into a proper WHATWG ReadableStream.
 import { ReadableStream } from 'node:stream/web'
 import { CODE, UpstreamError, classifyFailure, classifyStreamFailure, readHead, readSse, replayStream, sniffBody, transportCause } from './http.js'
 import { readEacUser } from './eac-user.js'
+import { openTunnel } from './egress.js'
 
 const LISTING_TIMEOUT_MS = 15000
 const TURN_TIMEOUT_MS = 300000
@@ -41,7 +45,80 @@ const TURN_TIMEOUT_MS = 300000
  * the signed bytes. Assignment is module-private by convention, exactly like
  * the free lane's upstream override.
  */
-export const lane = { fetch: null }
+export const lane = { fetch: null, proxy: undefined }
+
+let windowsProxy
+let windowsProxyAt = 0
+
+function proxyBypassed(target, patterns, windows = false) {
+  const hostname = target.hostname.toLowerCase()
+  const port = target.port || (target.protocol === 'https:' ? '443' : '80')
+  return String(patterns ?? '').split(/[;,\s]+/).filter(Boolean).some(raw => {
+    let pattern = raw.toLowerCase()
+    if (pattern === '*') return true
+    if (windows && pattern === '<local>') return !hostname.includes('.') && !hostname.includes(':')
+    const withPort = /^(.*):(\d+)$/.exec(pattern)
+    if (withPort) {
+      if (withPort[2] !== port) return false
+      pattern = withPort[1]
+    }
+    if (pattern.includes('*')) {
+      const escaped = pattern.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')
+      return new RegExp(`^${escaped}$`, 'i').test(hostname)
+    }
+    const domain = pattern.replace(/^\./, '')
+    return hostname === domain || (!windows && hostname.endsWith(`.${domain}`))
+  })
+}
+
+function parseWindowsProxy(output) {
+  const value = name => new RegExp(`^\\s*${name}\\s+REG_\\w+\\s+(.+)$`, 'mi').exec(output)?.[1]?.trim() ?? ''
+  if (Number(value('ProxyEnable')) !== 1 || value('ProxyServer') === '') return null
+  return { server: value('ProxyServer'), bypass: value('ProxyOverride') }
+}
+
+async function readWindowsProxy() {
+  const executable = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'reg.exe')
+  try {
+    const { stdout } = await promisify(execFile)(executable, [
+      'query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+    ], { windowsHide: true, timeout: 2000, maxBuffer: 64 * 1024, encoding: 'utf8' })
+    return parseWindowsProxy(stdout)
+  } catch { return null }
+}
+
+function windowsProxyFor(target, config) {
+  if (proxyBypassed(target, config.bypass, true)) return null
+  if (!config.server.includes('=')) return config.server
+  const entries = new Map(config.server.split(';').map(row => {
+    const at = row.indexOf('=')
+    return [row.slice(0, at).trim().toLowerCase(), row.slice(at + 1).trim()]
+  }))
+  return entries.get(target.protocol.slice(0, -1)) ?? null
+}
+
+function supportedProxy(address) {
+  if (!address) return null
+  try {
+    const url = new URL(String(address).includes('://') ? String(address) : `http://${address}`)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? address : null
+  } catch { return null }
+}
+
+async function proxyFor(target) {
+  if (lane.proxy !== undefined) return typeof lane.proxy === 'function' ? lane.proxy(target) : lane.proxy
+  const env = process.env
+  const address = (target.protocol === 'https:' ? env.HTTPS_PROXY ?? env.https_proxy : env.HTTP_PROXY ?? env.http_proxy)
+    ?? env.ALL_PROXY ?? env.all_proxy
+  if (address) return proxyBypassed(target, env.NO_PROXY ?? env.no_proxy ?? '') ? null : supportedProxy(address)
+  if (process.platform !== 'win32') return null
+  if (windowsProxy === undefined || Date.now() - windowsProxyAt >= 30_000) {
+    windowsProxyAt = Date.now()
+    windowsProxy = readWindowsProxy()
+  }
+  const config = await windowsProxy
+  return config === null ? null : supportedProxy(windowsProxyFor(target, config))
+}
 
 /**
  * Test seam for the per-user authorization token (src/eac-user.js), same
@@ -81,19 +158,55 @@ export { laneFetch as directFetch }
  * is what http.js's readHead/readSse consume; nothing is buffered before the
  * sniff window, so first tokens still flow out unheld.
  */
-function laneFetch(url, { method = 'GET', headers = {}, body = undefined, signal } = {}) {
+async function laneFetch(url, { method = 'GET', headers = {}, body = undefined, signal } = {}) {
   if (signal?.aborted === true) return Promise.reject(new UpstreamError('request aborted', CODE.aborted))
   if (typeof lane.fetch === 'function') return lane.fetch(url, { method, headers, body, signal })
+  const target = new URL(url)
+  const proxy = await proxyFor(target)
+  if (signal?.aborted === true) throw new UpstreamError('request aborted', CODE.aborted)
+  const proxyUrl = proxy ? new URL(proxy.includes('://') ? proxy : `http://${proxy}`) : null
+  const forward = proxyUrl?.protocol === 'http:' && target.protocol === 'http:'
+  let agent
+  if (proxyUrl && !forward) {
+    let socket
+    const abortDial = () => socket?.destroy()
+    signal?.addEventListener('abort', abortDial, { once: true })
+    try {
+      socket = await openTunnel(target, { kind: 'url', url: proxyUrl }, pending => {
+        socket = pending
+        if (signal?.aborted) abortDial()
+      })
+      if (signal?.aborted) {
+        socket.destroy()
+        throw new UpstreamError('request aborted', CODE.aborted)
+      }
+      agent = new http.Agent({ keepAlive: false })
+      agent.createConnection = () => socket
+    } catch (error) {
+      if (signal?.aborted) throw new UpstreamError('request aborted', CODE.aborted)
+      throw error
+    } finally {
+      signal?.removeEventListener('abort', abortDial)
+    }
+  }
   return new Promise((resolve, reject) => {
-    const target = new URL(url)
-    const transport = target.protocol === 'http:' ? http : https
+    const endpoint = forward ? proxyUrl : target
+    const transport = agent || endpoint.protocol === 'http:' ? http : https
+    const proxyAuth = forward && proxyUrl.username !== ''
+      ? 'Basic ' + Buffer.from(`${decodeURIComponent(proxyUrl.username)}:${decodeURIComponent(proxyUrl.password)}`).toString('base64')
+      : undefined
     const request = transport.request({
-      protocol: target.protocol,
-      hostname: target.hostname,
-      port: target.port || (target.protocol === 'http:' ? 80 : 443),
-      path: target.pathname + target.search,
+      hostname: endpoint.hostname,
+      port: endpoint.port || (endpoint.protocol === 'http:' ? 80 : 443),
+      path: forward ? target.href : target.pathname + target.search,
       method,
-      headers: body !== undefined ? { ...headers, 'content-length': Buffer.byteLength(body, 'utf8') } : headers,
+      agent: agent ?? (forward ? false : undefined),
+      headers: {
+        ...headers,
+        ...proxyUrl ? { host: target.host } : {},
+        ...proxyAuth ? { 'proxy-authorization': proxyAuth } : {},
+        ...body === undefined ? {} : { 'content-length': Buffer.byteLength(body, 'utf8') },
+      },
     }, response => {
       resolve({
         ok: response.statusCode >= 200 && response.statusCode < 300,
@@ -112,7 +225,7 @@ function laneFetch(url, { method = 'GET', headers = {}, body = undefined, signal
       })
     })
     request.on('error', reject)
-    const abort = () => request.destroy(new Error('The operation was aborted'))
+    const abort = () => request.destroy(new UpstreamError('request aborted', CODE.aborted))
     signal?.addEventListener('abort', abort, { once: true })
     request.on('close', () => signal?.removeEventListener?.('abort', abort))
     if (body !== undefined) request.write(body, 'utf8')
@@ -238,7 +351,34 @@ export async function postSealedStreamed({ credential, body, signal, onData, tim
   const shape = sniffBody(head.text)
   if (shape === 'empty') throw new UpstreamError('model stream returned no body', CODE.empty)
   if (shape === 'sse') {
-    await readSse(replayStream(head), onData, signal, timeoutMs)
+    // A stalled turn must say *why* it stopped (issue #433). The lane has no
+    // 60s cutoff any more — the only bound is the idle deadline — so when that
+    // deadline fires the user otherwise sees a bare "timeout" with no way to
+    // tell a silent upstream from a keepalive-only stream from a slow model.
+    // Count what actually arrived and report it.
+    const seen = { frames: 0, content: 0 }
+    const observe = text => {
+      seen.frames += 1
+      if (typeof text === 'string' && text !== '') seen.content += 1
+      onData(text)
+    }
+    try {
+      await readSse(replayStream(head), observe, signal, timeoutMs)
+    } catch (error) {
+      if (error?.code === CODE.timeout || error?.code === 'TIMEOUT') {
+        const detail = seen.frames === 0
+          ? 'the upstream accepted the request and then sent nothing at all'
+          : seen.content === 0
+            ? `the upstream sent ${seen.frames} keepalive frame(s) and no content`
+            : `the upstream sent ${seen.content} content frame(s) and then stopped`
+        throw new UpstreamError(
+          `EAC turn made no progress for ${Math.round(timeoutMs / 1000)}s — ${detail}. The lane has no fixed cutoff; this is the idle deadline, so the request was still open and simply produced nothing.`,
+          CODE.timeout,
+          { ...(error.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: error.providerRetryAfterMs }) },
+        )
+      }
+      throw error
+    }
     return { status: response.status }
   }
 

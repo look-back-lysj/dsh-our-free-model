@@ -14,6 +14,7 @@ import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
+import { hasEnginePayload, materializeEngine } from '../src/engine-payload.js'
 
 const repository = fileURLToPath(new URL('../', import.meta.url))
 const require = createRequire(import.meta.url)
@@ -111,7 +112,10 @@ async function packagePlugin() {
   const archive = path.join(scratch, packed.filename)
   const extraction = path.join(scratch, 'extracted')
   fs.mkdirSync(extraction)
-  await runFile('tar.exe', ['-xf', archive, '-C', extraction], { windowsHide: true, timeout: 30000 })
+  // bsdtar reads a drive-letter archive; an MSYS GNU tar earlier on the PATH
+  // would take "D:" for a remote host and refuse the file.
+  const tar = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar.exe'
+  await runFile(tar, ['-xf', archive, '-C', extraction], { windowsHide: true, timeout: 30000 })
   fs.mkdirSync(path.dirname(packageRoot), { recursive: true })
   fs.renameSync(insideScratch(path.join(extraction, 'package')), insideScratch(packageRoot))
   const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'))
@@ -128,7 +132,18 @@ async function packagePlugin() {
   }
   assert.equal(hash(client), digest(path.join(repository, 'client.js')), 'Packed client must match the source snapshot')
   assert.ok(report.package.workspacePresent, 'Packaged client has no native model workspace')
-  assert.ok(fs.existsSync(path.join(packageRoot, 'vendor/magpie/bin/magpie-win32-x64.exe')), 'Packaged engine binary is unavailable')
+  // The package ships the engine as its checksummed compressed parts
+  // (src/engine-parts + engine.json), not a loose binary; the shipped bytes
+  // must restore to the exact executable the manifest records.
+  assert.ok(report.package.engineMetadata, 'Packaged engine metadata is unavailable')
+  const engineEntry = report.package.engineMetadata.binaries?.[`${process.platform}-${process.arch}`]
+  assert.ok(engineEntry, `Packaged engine metadata lists no ${process.platform}-${process.arch} binary`)
+  assert.ok(hasEnginePayload(packageRoot, engineEntry), 'Packaged engine payload parts are incomplete')
+  const restored = await materializeEngine({
+    pkgDir: packageRoot, dataDir: path.join(scratch, 'engine-restore'), entry: engineEntry,
+  })
+  report.package.engineRestoredSha256 = hash(fs.readFileSync(restored))
+  assert.equal(report.package.engineRestoredSha256, engineEntry.sha256, 'Restored engine binary does not match its manifest')
   write(path.join(profile, 'package.json'), json({
     name: 'ofm-magpie-native-acceptance', private: true,
     dependencies: { 'dsh-our-free-model': `file:${archive.replaceAll('\\', '/')}` },
@@ -334,6 +349,15 @@ async function workspace() {
     await plugin.first().click()
   }
   await page.locator('.ofm_root').first().waitFor({ timeout: 30000 })
+  // The first settings visit opens the disclaimer dialog (v2.6.0+); it covers
+  // the plugin surface until its accept button is pressed, and mounts a moment
+  // after the app does, so wait for it briefly rather than racing its render.
+  const disclaimer = page.locator('.ofm_ann.ofm_disclaimer')
+  await disclaimer.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {})
+  if (await disclaimer.isVisible().catch(() => false)) {
+    await disclaimer.getByRole('button', { name: /我已阅读并了解|I (?:have )?read|Understood/i }).click()
+    await disclaimer.waitFor({ state: 'hidden', timeout: 30000 })
+  }
   const workspaceTab = page.locator('#ofm-tab-workspace')
   await workspaceTab.waitFor({ state: 'visible', timeout: 60000 })
   if (await workspaceTab.getAttribute('aria-selected') !== 'true') {
@@ -495,10 +519,10 @@ async function warmCompositor() {
 async function capture(name, width, theme) {
   const displayed = await warmCompositor()
   if (name === 'routing') {
-    await frame.locator('.rt-hub > b').filter({ hasText: 'Our Free Model' }).waitFor()
-    assert.equal(await frame.locator('.rt-hub > svg.rt-bird').count(), 0)
-    await until(async () => frame.locator('.rt-hub > img.ofm-brand-icon').evaluate(image =>
-      image.complete && image.naturalWidth > 0).catch(() => false), 10000, 'routing host brand image')
+    // The engine's own bird and name; the host supplies theme and toolbar only.
+    await frame.locator('.rt-hub > b').filter({ hasText: 'magpie' }).waitFor()
+    await frame.locator('.rt-hub > svg.rt-bird').waitFor()
+    assert.equal(await frame.locator('.rt-hub > img.ofm-brand-icon').count(), 0)
   }
   const painted = await frame.locator('body').evaluate(() => new Promise(resolve => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve({

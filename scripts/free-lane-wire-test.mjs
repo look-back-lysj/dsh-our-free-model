@@ -1,7 +1,9 @@
 /**
  * The free lane's wire facts, re-measured against the live gateway on 2026-10-14,
- * re-checked against the **v2** client fingerprint on 2026-10-16, and re-checked
- * against the session-encoding gate on 2026-10-17.
+ * re-checked against the **v2** client fingerprint on 2026-10-16, re-checked
+ * against the session-encoding gate on 2026-10-17, and re-aligned with the
+ * opencode2api v1.4.6 reference port on 2026-10-31 (family paths, per-request
+ * project id, canonical v2 token from src/o2a/version.js).
  *
  * These are the things that changed and that a future edit can silently break:
  * the lane's base path, the four session headers, the shape *and encoding* of
@@ -21,11 +23,19 @@ const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-wire-'))
 process.env.DSH_HOME = scratch
 
 const seen = []
+/** One scripted upstream answer, used by the failure-shape checks below. */
+let scriptedReply = null
 const server = http.createServer((req, res) => {
   const pieces = []
   req.on('data', piece => pieces.push(piece))
   req.on('end', () => {
     seen.push({ method: req.method, url: req.url, headers: req.headers, body: Buffer.concat(pieces).toString('utf8') })
+    if (scriptedReply !== null) {
+      const { status, body } = scriptedReply
+      res.writeHead(status, { 'content-type': 'text/plain' })
+      res.end(body)
+      return
+    }
     if (req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ data: [] }))
@@ -40,7 +50,8 @@ server.unref()
 process.env.OUR_FREE_MODEL_BASE = `http://127.0.0.1:${server.address().port}`
 
 const up = await import('../src/upstream.js')
-const { postStreamed, getJson } = await import('../src/http.js')
+const { clientToolWireName } = await import('../src/o2a/tool-renames.js')
+const { postStreamed, getJson, readSse, CODE } = await import('../src/http.js')
 
 let failures = 0
 const check = (name, actual, expected) => {
@@ -50,11 +61,11 @@ const check = (name, actual, expected) => {
 }
 const declared = (body, name) => (body.tools ?? []).find(tool => (tool.function?.name ?? tool.name) === name)
 
-console.log('=== 1. the lane lives under /inference/v1 ===')
+console.log('=== 1. the lane follows the 2.1 client’s provider-family paths ===')
 {
-  check('chat model', up.endpointFor('cat-jam-free'), '/inference/v1/chat/completions')
-  check('responses model', up.endpointFor('muse-spark-1.3-contributor-free'), '/inference/v1/responses')
-  check('messages model', up.endpointFor('union-alpha'), '/inference/v1/messages')
+  check('chat model', up.endpointFor('cat-jam-free'), '/inference/openai/v1/chat/completions')
+  check('responses model', up.endpointFor('muse-spark-1.3-contributor-free'), '/inference/openai/v1/responses')
+  check('messages model', up.endpointFor('union-alpha'), '/inference/anthropic/v1/messages?beta=true')
   check('wire for chat', up.wireFor('cat-jam-free'), 'chat')
   check('wire for responses', up.wireFor('muse-spark-1.3-contributor-free'), 'responses')
   check('wire for messages', up.wireFor('union-alpha'), 'messages')
@@ -72,8 +83,28 @@ console.log('\n=== 2. the four v2 session headers, and no v1-only request header
   check('session id repeats it', headers['x-session-id'], session)
   // v1 sent `x-opencode-request`; v2 answers that header with 403 FreeTierError.
   check('no x-opencode-request', 'x-opencode-request' in headers, false)
-  check('the User-Agent is the canonical v2 token', headers['user-agent'], 'opencode/latest/2.0.26/cli')
-  check('streaming accept', headers.accept, 'text/event-stream')
+  check('the User-Agent is the canonical v2 token', headers['user-agent'], up.CLIENT_UA)
+  // The official 2.2.3 client answers with its fetch stack's wildcard accept
+  // (issue #708's HTTP-Toolkit trace); the reference's Go client omitting the
+  // header described the reference, not the official client.
+  check('the v2 lane answers with the official wildcard accept', headers.accept, '*/*')
+  check('an explicit accept override still ships', up.gatewayHeaders({ session, accept: 'application/json' }).accept, 'application/json')
+  check('accept can be omitted explicitly', 'accept' in up.gatewayHeaders({ session, accept: null }), false)
+  // The official client carries a W3C trace pair on every request; the pair is
+  // fresh per request, and both spellings share one trace/span id pair.
+  const trace = headers.traceparent
+  check('traceparent rides every request', /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/.test(trace), true)
+  check('b3 carries the same ids', headers.b3, `${trace.slice(3, 35)}-${trace.slice(36, 52)}-1-${headers.b3.split('-')[3]}`)
+  check('the next request mints a fresh trace', up.gatewayHeaders({ session, stream: true }).traceparent !== trace, true)
+  // v1.4.6: the project id is a bare 40-hex id. Since our PR #757 port, the
+  // default derives from the session — one conversation, one quota bucket —
+  // instead of the reference's per-request mint (a proxy-pool spread that
+  // scatters a single-IP client's usage across uncorrelated identities).
+  const project = headers['x-opencode-project']
+  check('the project id is a bare 40-hex id', /^[0-9a-f]{40}$/.test(project), true)
+  check('a second request keeps the conversation project stable', up.gatewayHeaders({ session, stream: true })['x-opencode-project'] === project, true)
+  check('a different session derives a different project', up.gatewayHeaders({ session: `${session}x` })['x-opencode-project'] !== project, true)
+  check('a caller project of `global` passes through', up.gatewayHeaders({ session, project: 'global' })['x-opencode-project'], 'global')
 }
 
 console.log('\n=== 3. the session id must carry the descending encoding the gate accepts ===')
@@ -117,14 +148,21 @@ console.log('\n=== 4. the v2 tool gate: read + shell, official definitions, no t
   up.applyFingerprint(claude, 'claude')
   check('Messages shape uses input_schema', declared(claude, 'read').input_schema.required, ['path'])
 
-  // A caller tool that reuses a gate name with another definition moves aside,
-  // and the response side still restores the caller's own spelling.
+  // A caller tool that reuses a gate name with another definition takes an
+  // opaque handle; the official definition keeps the official name. A caller
+  // schema at the official name is what the upstream answers with 429
+  // (measured 2026-11-22 against DSH's own `bash` tool).
   const caller = { tools: [{ type: 'function', function: { name: 'read', description: 'the caller read', parameters: { type: 'object', properties: {} } } }] }
   const map = up.applyFingerprint(caller, false)
-  check('only one declaration carries the gate name', caller.tools.filter(tool => tool.function.name === 'read').length, 1)
-  check('…and it is the official definition', declared(caller, 'read').function.parameters.required, ['path'])
-  check('the caller declaration survived under an alias', caller.tools.find(tool => tool.function.name === 'read_client').function.description, 'the caller read')
-  check('…and the alias restores the caller name', up.restoreToolName('read_client', map), 'read')
+  const handle = clientToolWireName('read')
+  check('the caller read takes a handle', caller.tools.filter(tool => tool.function.name === handle).length, 1)
+  check('the official read is declared once', caller.tools.filter(tool => tool.function.name === 'read').length, 1)
+  check('the official read keeps the official definition', declared(caller, 'read').function.parameters.required, ['path'])
+  // The caller's words survive on its own handle; only the ASCII spaces become
+  // NBSP, which is what stops a literal phrase in a caller description matching
+  // an upstream rule.
+  check('…and the caller handle keeps the caller words', caller.tools.find(tool => tool.function.name === handle).function.description, 'the\u00a0caller\u00a0read')
+  check('…and the wire name restores the caller name', up.restoreToolName(handle, map), 'read')
 }
 
 console.log('\n=== 5. the User-Agent is the canonical v2 token, whatever the host attributes ===')
@@ -141,7 +179,7 @@ console.log('\n=== 5. the User-Agent is the canonical v2 token, whatever the hos
     timeoutMs: 5000,
   })
   const sent = seen[seen.length - 1]
-  check('the request reached the chat path', sent.url, '/inference/v1/chat/completions')
+  check('the request reached the chat path', sent.url, '/inference/openai/v1/chat/completions')
   check('the refused token is gone', /deepseek[-_]harness/i.test(sent.headers['user-agent'] ?? ''), false)
   check('the UA is the canonical v2 token', sent.headers['user-agent'], up.CLIENT_UA)
   check('…and carries no attribution suffix', sent.headers['user-agent'].includes(' '), false)
@@ -173,6 +211,127 @@ console.log('\n=== 6. 目录请求与推理请求使用同一串 v2 UA ===')
   const unrelated = 'other-client/3.0 (+https://example.com/our-free-model-standalone)'
   await getJson('/inference/v1/models', { attributionUserAgent: unrelated })
   check('任何归属串都不再改变线上 UA', seen.at(-1).headers['user-agent'], up.CLIENT_UA)
+}
+
+console.log('\n=== 7. an empty 5xx body names the hop instead of saying "HTTP 502" (issue #549) ===')
+{
+  const failureOf = async body => {
+    try {
+      await postStreamed({
+        path: up.endpointFor('cat-jam-free'),
+        body: { model: 'cat-jam-free', stream: true, ...body },
+        session: up.sessionForConversation('wire:empty-5xx'),
+        onData: () => {},
+        timeoutMs: 5000,
+      })
+      return null
+    } catch (error) {
+      return error
+    }
+  }
+  const textPart = { type: 'text', text: '颜色？' }
+  const imagePart = type => ({ type, ...(type === 'image_url' ? { image_url: { url: 'data:image/png;base64,AAAA' } } : { source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }) })
+  const withImages = type => ({ messages: [{ role: 'user', content: [textPart, imagePart(type)] }] })
+
+  scriptedReply = { status: 502, body: '' }
+  const plain = await failureOf({ messages: [{ role: 'user', content: 'ping' }] })
+  check('an empty 502 is classified as a gateway failure', plain?.code, 'SERVER')
+  check('…and keeps the status', plain?.status, 502)
+  check('…and is marked as an empty body', plain?.emptyBody, true)
+  check('…and the message names the hop', /answered HTTP 502 with an empty body/.test(plain?.message ?? ''), true)
+  check('…and says the failure is not in the request', /not in this request/.test(plain?.message ?? ''), true)
+  check('…and does not blame images when none were sent', /image content/.test(plain?.message ?? ''), false)
+
+  for (const type of ['image_url', 'input_image', 'image']) {
+    scriptedReply = { status: 502, body: '' }
+    const image = await failureOf(withImages(type))
+    check(`an empty 502 for ${type} names the image content`, /carried image content/.test(image?.message ?? ''), true)
+    check(`…and ${type} keeps the retryable class`, image?.code, 'SERVER')
+  }
+
+  scriptedReply = { status: 503, body: '  \n ' }
+  const unavailable = await failureOf({ messages: [{ role: 'user', content: 'ping' }] })
+  check('a whitespace-only 503 body counts as empty', unavailable?.emptyBody, true)
+  check('…and the message carries the real status', /answered HTTP 503/.test(unavailable?.message ?? ''), true)
+
+  // An envelope, however terse, is still the gateway's own account of the
+  // failure — it must reach the caller unchanged.
+  scriptedReply = { status: 502, body: '{"error":{"message":"upstream connect timeout"}}' }
+  const enveloped = await failureOf({ messages: [{ role: 'user', content: 'ping' }] })
+  check('a 502 with an envelope keeps its own message', enveloped?.message, 'upstream connect timeout')
+  check('…and is not marked as an empty body', enveloped?.emptyBody, undefined)
+
+  // The 4xx path is deliberately untouched: an empty 401 is still a credential
+  // verdict, not a generic client error.
+  scriptedReply = { status: 401, body: '' }
+  const unauthorized = await failureOf({ messages: [{ role: 'user', content: 'ping' }] })
+  check('an empty 401 still reads as a credential problem', unauthorized?.code, 'INVALID_CREDENTIAL')
+  check('…and is not routed through the empty-5xx message', unauthorized?.emptyBody, undefined)
+
+  scriptedReply = null
+}
+
+console.log('\n=== 8. 空闲时钟只由真数据上弦，不被 keepalive 注释帧续命（#460）===')
+{
+  // SSE defines a comment line (`: ping`) as something to ignore. A gateway that
+  // pings every 10–15s to hold the socket open therefore used to keep a wedged,
+  // token-less turn alive forever: every read reset `deadline`, so the request
+  // never reached `CODE.timeout` and simply squatted on the connection.
+  const pinging = (async function* () {
+    const stopAt = Date.now() + 800
+    while (Date.now() < stopAt) {
+      // Pacing is deliberately wide of the idle budget below (6.7x margin):
+      // the contract under test is "comments do not renew the clock", not
+      // these exact milliseconds, and a 40/120 pairing flaked when the whole
+      // marathon suite ran on a loaded machine.
+      await new Promise(resolve => setTimeout(resolve, 60))
+      yield Buffer.from(': keepalive\n')
+    }
+    await new Promise(() => {}) // wedged: no data, no close
+  })()
+  const startedPing = Date.now()
+  let pingCode = null
+  try {
+    await readSse(pinging, () => {}, undefined, 400)
+  } catch (error) { pingCode = error?.code }
+  const pingElapsed = Date.now() - startedPing
+  check('a keepalive-only stream times out', pingCode, CODE.timeout)
+  check(`…at its own deadline (${pingElapsed}ms), not after the pings stop`, pingElapsed < 700, true)
+
+  // The counterweight: real payloads must still wind the clock, or a slow lane
+  // that trickles tokens would be killed mid-answer.
+  const trickle = (async function* () {
+    for (let i = 0; i < 8; i++) {
+      await new Promise(resolve => setTimeout(resolve, 60))
+      yield Buffer.from(`data: {"n":${i}}\n\n`)
+    }
+    await new Promise(() => {})
+  })()
+  const trickled = []
+  let trickleCode = null
+  try {
+    await readSse(trickle, payload => trickled.push(payload), undefined, 400)
+  } catch (error) { trickleCode = error?.code }
+  check('a stream that keeps sending payloads is not idle', trickled.length, 8)
+  check('…and only ends after the payloads stop', trickleCode, CODE.timeout)
+
+  // A raw-JSON body carries no SSE framing, so nothing is dispatched until the
+  // document is complete — yet every chunk is progress. "Renew only when onData
+  // fired" would kill this one, which is why the witness is wider than that.
+  const document = JSON.stringify({ choices: [{ message: { content: 'raw' } }] })
+  const rawChunks = (async function* () {
+    for (let at = 0; at < document.length; at += 4) {
+      await new Promise(resolve => setTimeout(resolve, 60))
+      yield Buffer.from(document.slice(at, at + 4))
+    }
+  })()
+  const rawSeen = []
+  let rawCode = null
+  try {
+    await readSse(rawChunks, payload => rawSeen.push(payload), undefined, 400)
+  } catch (error) { rawCode = error?.code }
+  check('a raw-JSON body without newlines still counts as progress', rawCode, null)
+  check('…and is dispatched once complete', rawSeen.length, 1)
 }
 
 server.close()

@@ -1,4 +1,5 @@
-export type Page = 'overview' | 'workspace' | 'agents' | 'providers' | 'library' | 'routing' | 'models' | 'usage' | 'channels' | 'eac' | 'settings' | 'updates' | 'connection' | 'sponsor'
+export type Page = string
+
 export interface Model {
   id: string
   name: string
@@ -28,7 +29,114 @@ export interface ServiceSettings {
   standaloneProbe: boolean
   probeIntervalMinutes: number
   defaultMaxTokens: number
+  developerPlugins: boolean
+  autoUpdateExtensions: boolean
+  /**
+   * The OpenCode free lane's exit pool. `proxies` holds masked labels (protocol,
+   * host and port only) — the addresses themselves never ride in a routine
+   * payload, because a proxy URL routinely carries credentials in its userinfo.
+   * On a write, `proxies` is optional: omitting it keeps the stored list.
+   */
+  freeLane?: { proxies?: string[]; maxTries: number }
 }
+
+export interface PluginPermissions { network: string[]; secrets: string[]; storage: boolean }
+export interface PluginConfigField {
+  key: string
+  type: 'text' | 'password' | 'toggle' | 'number' | 'select'
+  label: string
+  description: string
+  default?: unknown
+  options?: string[]
+}
+export interface PluginPage {
+  id: string
+  pluginId: string
+  pageId: string
+  title: string
+  description?: string
+  group: string
+  order: number
+  icon: string
+  url: string
+  builtin: boolean
+  version: string
+}
+export interface PluginRecord {
+  id: string
+  name: string
+  version: string
+  kind: string
+  kinds: string[]
+  type: string
+  description: string
+  author: string
+  license: string
+  homepage: string
+  repository: string
+  icon: string
+  permissions: PluginPermissions
+  config: PluginConfigField[]
+  hooks: string[]
+  enabled: boolean
+  builtin: boolean
+  essential: boolean
+  source: 'registry' | 'local' | 'builtin' | string
+  verified: boolean
+  installedAt: string
+  state: string
+  error: string
+  apiVersion: string
+  requires: string[]
+  provides: string[]
+  selfTestAvailable: boolean
+  secrets: { key: string; hasValue: boolean; hint: string }[]
+  values: Record<string, unknown>
+  pages: { id: string; title: string; entry: string; group: string; order: number; icon: string }[]
+  pageCount: number
+  fileCount: number
+  modelCount?: number
+}
+export interface PluginRegistryEntry extends Omit<PluginRecord, 'enabled' | 'installedAt' | 'state' | 'error' | 'secrets' | 'values' | 'pageCount' | 'fileCount' | 'modelCount' | 'source' | 'verified' | 'builtin' | 'essential'> {
+  summary?: string
+  tags?: string[]
+  publishedAt?: string
+  changelog?: string[]
+  sourceUrl?: string
+  models?: { id: string; name?: string }[]
+  cover?: { url: string; size: number; sha256: string; contentType?: string }
+  installed: boolean
+  installedVersion?: string
+  enabled: boolean
+  updateAvailable: boolean
+  installable: boolean
+  state: string
+  fileCount: number
+}
+export interface PluginUpdate {
+  id: string
+  from: string
+  to: string
+  seenAt: number
+  ready: boolean
+  soakRemainingMs: number
+  enabled: boolean
+}
+
+export interface RegistryMeta {
+  source: string
+  fetchedAt: number
+  generatedAt: string
+  soakHours: number
+}
+
+export interface PluginsSummary {
+  installedCount: number
+  builtinCount: number
+  pages: PluginPage[]
+  developerPlugins: boolean
+}
+
 export interface Summary {
   version: string
   baseUrl: string
@@ -40,6 +148,7 @@ export interface Summary {
   channels: { state: string; error?: string }
   eacAuth?: { local?: boolean; authorized?: boolean; login?: string }
   catalog: Model[]
+  plugins?: PluginsSummary | null
 }
 export interface Stats {
   requests: number
@@ -80,4 +189,7 @@ export interface Host {
   testModel(model: string, signal: AbortSignal): Promise<ModelTestResult>
   refreshModels(probe: boolean, signal: AbortSignal): Promise<void>
   saveSettings(settings: Partial<ServiceSettings>): Promise<ServiceSettings>
+  /** Lift the cooldown on every free-lane exit; returns how many were cleared. */
+  clearLaneExits(): Promise<number>
+  request<T = unknown>(path: string, body?: unknown, timeoutMs?: number): Promise<T>
 }

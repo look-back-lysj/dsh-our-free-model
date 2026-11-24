@@ -1,13 +1,15 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
-import { ArrowRight, Cable, Check, CircleAlert, FlaskConical, ListRestart, RefreshCw, Save, Search, Settings2, Trash2 } from 'lucide-react'
+import { ArrowRight, Check, CircleAlert, FlaskConical, ListRestart, RefreshCw, Save, Search, Settings2, Trash2 } from 'lucide-react'
 import { Badge, Button, Input, Switch } from './components/ui'
+import { ProviderIcon } from './components/provider-icon'
 import { WorkbenchDialog } from './components/workbench-dialog'
 import { failureMessage, management, useManagementResource } from './management'
+import { useReveal } from './motion/hooks'
 import type { Host } from './types'
 
 interface Provider {
   id: string; name: string; category: string; format: string; authKind: string
-  baseUrl: string; modelCount: number; models?: string[]
+  baseUrl: string; modelCount: number; models?: string[]; notes: string
 }
 interface Configuration {
   enabled: boolean; hasKey: boolean; keyHint?: string; baseUrl: string; models: string[]
@@ -79,6 +81,7 @@ function ProviderEditor({ provider, configuration, onClose, onSaved }: {
   return <WorkbenchDialog title={`${provider.name} · ${saved ? '渠道配置' : '连接渠道'}`} onClose={onClose} busy={!!busy}>
     <form className="wb-form" onSubmit={event => { event.preventDefault(); void run('save') }}>
       <div className="wb-form-meta"><Badge tone="blue">{provider.format}</Badge><Badge>{provider.category}</Badge><span>{provider.authKind}</span></div>
+      {provider.notes && <p className="wb-form-notes">{provider.notes}</p>}
       <label>API 地址<Input required type="url" value={baseUrl} disabled={!!busy} onChange={event => change(() => setBaseUrl(event.target.value))} /></label>
       <label>API Key<Input type="password" autoComplete="new-password" spellCheck={false} value={key}
         placeholder={hasKey ? '已保存密钥；留空保留' : '输入 API Key'} disabled={!!busy}
@@ -116,6 +119,8 @@ export function Providers({ active, host }: { active: boolean; host: Host }) {
       && (category === 'all' || row.category === category)
       && (filter === 'all' || (filter === 'connected' ? isConnected : !isConnected))
   })
+  // 列表入场：容器进视口后逐项错峰升起（只播一次）
+  const reveal = useReveal<HTMLDivElement>(rows.length)
   return <div className="pd-page">
     <header className="wb-heading"><div><span className="wb-eyebrow">PROVIDERS</span><h1>聚合渠道</h1><p>第三方 API 与自有密钥</p></div>
       <Button variant="outline" title="刷新渠道目录" aria-label="刷新渠道目录" disabled={loading || !!selected} busy={loading} onClick={() => void reload()}><RefreshCw size={15} /><span>刷新</span></Button></header>
@@ -125,11 +130,11 @@ export function Providers({ active, host }: { active: boolean; host: Host }) {
       <div className="wb-segments" aria-label="连接状态">{[['all', '全部'], ['connected', '已连接'], ['pending', '未连接']].map(([id, name]) => <button key={id} type="button" aria-pressed={filter === id} onClick={() => setFilter(id)}>{name}</button>)}</div></div>
     {error && <div className="wb-feedback wb-error" role="alert"><CircleAlert size={16} /><span>{error}</span><Button variant="outline" disabled={loading} onClick={() => void reload()}>重试</Button></div>}
     <div className="wb-list-caption"><span>{rows.length} 个渠道</span><span>协议 / 模型 / 连接状态</span></div>
-    <div className="pd-list" aria-busy={loading}>
-      {rows.map(provider => {
+    <div className="pd-list m-reveal" ref={reveal} aria-busy={loading}>
+      {rows.map((provider, index) => {
         const config = configured[provider.id], isConnected = connected(provider, config)
-        return <div className="pd-row" key={provider.id}>
-          <span className={`wb-app-icon ${isConnected ? 'is-green' : ''}`}><Cable size={21} /></span>
+        return <div className="pd-row" key={provider.id} style={{ '--i': String(index) } as React.CSSProperties}>
+          <span className={`wb-app-icon ${isConnected ? 'is-green' : ''}`}><ProviderIcon id={provider.id} name={provider.name} /></span>
           <div className="pd-name"><strong>{provider.name}</strong><small title={config?.baseUrl || provider.baseUrl}>{endpoint(config?.baseUrl || provider.baseUrl)}</small></div>
           <div className="pd-protocol"><Badge>{provider.format}</Badge><small>{provider.category}</small></div>
           <span className="pd-model-count">{config?.models?.length ?? provider.modelCount ?? '未知'} <small>模型</small></span>

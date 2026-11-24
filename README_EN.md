@@ -20,12 +20,10 @@
 
 <div align="center">
 
-> All you do is install this plugin in dsh — no login, no sign-up, no API key, no other
-> step of any kind. The frontier models are simply there, DeepSeek V4.1 Flash and
-> Kimi K3 among them. Completely free, with no usage cap.
+> Install the plugin in dsh to use the free lane without signing in, creating an
+> account, or entering an API key.
 >
-> 你只需在 dsh 里装上这个插件，无需登录、注册、填 API Key 或任何其它操作，就能用上包括
-> DeepSeek V4.1 Flash、Kimi K3 在内的前沿模型——完全免费，不限量。
+> 在 dsh 里装上插件即可使用免费车道，无需登录、注册或填写 API Key。
 >
 > The roster follows upstream, availability is measured from **your own** network
 > egress, the thinking-effort control sends a real budget instead of a prompt hint, and
@@ -40,11 +38,11 @@
 ## Community
 
 <div align="center">
-  <img src="docs/images/qq-group-883073874.jpg" alt="QR code for ai技术交流群8 (QQ group: 883073874)" width="300">
+  <img src="docs/images/qq-group-974582805.png" alt="QR code for OFM技术交流[2群] (QQ group: 974582805)" width="300">
   <br>
-  <b>QQ group: 883073874 (ai技术交流群8)</b>
+  <b>QQ group: 974582805 (OFM技术交流[2群])</b>
   <br>
-  Scan the QR code or search for the group number to join, discuss the plugin, report issues and share tips.
+  Scan the QR code to join, discuss the plugin, report issues and share tips.
 </div>
 
 ---
@@ -64,13 +62,15 @@
 - **Works without a browser UI** — only `llm` is a hard dependency, so the plugin activates on a headless composition such as dsh-tui and still serves its models. The dashboard half lives on its own fiber and mounts itself when `webServer` appears, so a composition that loads plugins before its HTTP server exists still gets its settings page. Availability probing and the background loops run on plain timers.
 - **Usage dashboard, local only** — token heatmap, cumulative curve by total or per model, output speed and time-to-first-token sampled per call. Nothing is uploaded.
 - **OpenAI-compatible forward port** — expose these models to any other local tool through a base URL plus a generated API key. Assistant string `reasoning_content` fields in Chat history are preserved for tool follow-ups, including explicit empty strings; absent fields are not fabricated.
-- **EAC lane** — a co-paid lane for DSHEAC AIO and kernel-declared `desktop`, `tauri`, `web`, or `web-desktop` profiles, with models prefixed `EAC`. Its credential is sealed; host admission and server-side GitHub authorization (sign in and star the repository) remain separate requirements. Command-line profile arguments alone do not grant access.
+- **EAC lane** — provided by the project maintainers for DSHEAC AIO and kernel-declared `desktop`, `tauri`, `web`, or `web-desktop` profiles. On a compatible host, sign in to GitHub and star this repository to unlock access at no cost. The credential is sealed, and the server verifies GitHub authorization. Models use the `EAC` prefix. For example, Kimi K3.1 Pro appears as EAC Kimi K3.1 Pro when included in the lane's model list. Command-line profile arguments alone do not grant access.
 - **The Kilo channel (keyless free pool)** — the free model pool of Kilo AI's public gateway (the listing's `isFree` slice, fetched live, including the `kilo-auto/free` auto-router) is built in; no account, no key. Model cards carry a Kilo badge. Thinking effort works like the EAC lane: the model's own level menu (Off / Low / Medium / High, default High), sent for real through the gateway's unified `reasoning` parameter — Off was verified family by family to zero out thinking (nemotron, ling, dots, poolside, apodex, cohere); the stepfun and liquid endpoints refuse to disable thinking (HTTP 400) and the two auto-routers ignore it, so those models' menus omit the Off rung. The pool is the upstream's free offer, and its model cards state that prompts may be logged to improve their services — never send sensitive content; see the [Disclaimer](#disclaimer).
 - **The aggregate lane — your own key, 77 providers** — a new settings tab brings third-party endpoints into the same roster: the registry ships 77 providers (NVIDIA NIM, OpenRouter, Groq, Cerebras, SambaNova, Gemini, DeepSeek, Mistral, Together, Fireworks, SiliconFlow, Nebius, Chutes, Hugging Face, Cloudflare, Z.ai, Kimi, MiniMax, QwenCloud/Alibaba, Bedrock, Vertex, Vercel AI Gateway, Azure OpenAI, FleetRelay Gateway, plus the no-account Ollama, LM Studio and llama.cpp). Configuring a provider (a key for the ones that need one; the local no-account ones need none) turns each of its models into a `provider/model` row in the picker and on the local gateway. Keys stay in the local `0600` settings.json; the API echoes only `hasKey` and a `…abcd` fingerprint. Per provider: enable/disable, Test (a *listing* probe — it verifies a key without spending a generation), Discover, a base-URL override, a model-list override and Remove. OAuth/ADC providers are listed but marked not drivable here. OpenCode's keyless free pool is deliberately **not** a registry row: it requires a per-request minted session id, the v2 client User-Agent and a set of official tool declarations, which this lane's generic transport has nowhere to carry — listing it would only add a picker row that can never answer, and those ten models are served natively by the plugin's own free lane.
 - **Token savers** — three things: tool-output compaction (RTK) rewrites `tool_result` content in place before the request is sent (git diff / status / log, grep, find, ls, tree, build logs, numbered file dumps, search listings, duplicate log lines) — measured live, a 40 KB `git diff` lost 90% of its bytes and the model still answered about it; prompt shaping offers the caveman and ponytail families, every level off by default; and five local answers that never call a provider. The settings page reports bytes before/after, percent saved, blocks compacted and calls measured, from the same stats rows the usage charts read.
 - **Routing (fallback chains)** — chain models from any lane into one named chain that appears in the picker and on the gateway as the virtual model `combo:<name>`. `fallback` always starts at the head; `round-robin` rotates the starting point and stays there for N turns. A link that fails *before any answer delta* is discarded whole, so the switch is invisible to the caller — and reasoning deltas deliberately do not count as content, so "thought for a minute, then hit a quota wall" is the case failover exists for.
 - **The local gateway speaks Anthropic natively** — new `POST /v1/messages` (streaming and non-streaming, with `thinking`/`tool_use` blocks, a real `stop_reason` and an in-stream `error` event when a turn fails after the headers went out) and `POST /v1/messages/count_tokens` (a local estimate — the plugin ships no tokenizer); `/v1/models` now advertises every lane, the aggregate rows and the chains included. The gateway page's new *Connect a client* section generates copy-ready recipes — Claude Code, Codex `config.toml`, the OpenAI and Anthropic SDKs, curl, and a LAN variant when the relay is up — from the port that actually bound and the key that is actually required.
-- **Optional visual effects** — The settings header has a Visual effects switch, off by default. The aquarium and model features stay available; enabling it restores background glows, glass blur and decorative motion. The preference stays in the current browser.
+- **OFM Plugin Center: one market for channels, enhancements and pages** — the repository [Ebony-Vinyl/ofm-extensions](https://github.com/Ebony-Vinyl/ofm-extensions) hosts community plugins: an Ed25519-signed index, installs verify the SHA-256 and run a static scan, and code runs inside a Worker VM sandbox (the only import is the controlled `ofm:sdk`; the network is limited to the domains the manifest declares, secrets go in and never come out, every hook has a timeout breaker). A channel plugin's models appear in the picker as soon as it is installed (`replaces` can take a built-in lane over), enhancements hook `onRequest`/`onModels`/`onUsage`, and a page plugin adds one sandboxed iframe page to the sidebar whose only door to the host is the controlled message bridge. Manifests v1 and v2 are both accepted; the built-in channel pack, aggregate directory, client launcher, library formats and model workspace register through the same center as essential, non-removable descriptors. Discover, install, update, enable, configure, secrets, self-test and uninstall all live in the console's Plugin Center; developer mode installs unsigned local packages behind an explicit acknowledgement, an unverified badge and the same sandbox. The market page adds cover banners, type color bands and skeleton loaders, and the detail drawer carries a direct link to the signed source, release notes (changelog) and the permission list; the host refreshes the index on a background cadence, and the installed shelf exports / imports as JSON (never including secrets) for migration. Model-workspace (magpie) lane inference is wired into the same enhancement hook chain (onRequest) and, by default, leaves through the host's replaceable fetch, so local proxy plugins (context extenders and friends) can see it again; OFM_ENGINE_PRIVATE_FETCH=1 returns to the private direct transport.
+- **The free lane's quota breaker and exit proxy (the full answer to issues #708/#767)** — the upstream counts free usage per egress IP; one real 429 opens the breaker (a 6-hour default window when `Retry-After` is absent), and while it is open the plugin refuses turns locally instead of feeding the wall. `FreeTierError` locks the lane separately. Every manual test is kept (listing refresh, single-model check, speed test) and automatic probing stays off — availability is learned passively from real traffic. The lane accepts its own exit proxy (http/https/socks5) and the `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` environment; "retry after changing the exit" clears the window once, and "test the exit" pings a third-party echo that spends no quota. Request shape matches the official 2.2.3 client (`traceparent`/`b3`/wildcard `accept`), while preserving tool-name binding, cleanup of unmatched historical calls, and the title-request bypass. See [request adaptation](src/o2a/SYNC.md).
+- **Thirteen pages of glass** —
 - **Eleven tabs beside the old six** — Aggregate, Token savers, Routing, Plugin upgrade and Recommended projects join Free models, EAC models, Free channels, Dashboard, Request log and Gateway; the motion pass (card rise on mount, page fade on tab switch, an animated savings meter, hover lifts) respects `prefers-reduced-motion` and collapses to one column at panel width. The Recommended-projects page carries the three companion repositories — EAC-Desktop, EAC-Pack and EAC-design-world — with a description, a direct link and a star button each, and their live star, fork and last-push numbers read from GitHub (absent, never invented, when GitHub cannot be reached).
 - **Clean names in the UI** — no mojibake, no upstream vendor strings leaking into your model picker.
 
@@ -101,7 +101,7 @@ the picker by itself as soon as a probe gets through.
 
 ## Install
 
-> **⚠️ Do not install this plugin from npm.**
+> **⚠️ Do not install the bare `dsh-our-free-model` package from npm.**
 >
 > The `dsh-our-free-model` package on npm **is not published by this repository.**
 > It is a third-party repackaging whose contents do not match this tree:
@@ -110,8 +110,18 @@ the picker by itself as soon as a probe gets through.
 > a build this project did not review, and you lose the signed-manifest
 > verification and in-app upgrades that this repository provides.
 >
-> Install only the ways documented below: a release package from this repository,
-> or a local source directory. For any same-named package from another channel,
+> This repository publishes the scoped **`@ebony-vinyl/dsh-our-free-model`**, built
+> from the same tree and version as the release `dsh-our-free-model-<version>.tgz`.
+> If you prefer npm:
+>
+> ```
+> dsh plugin --profile web add @ebony-vinyl/dsh-our-free-model@2.9.0
+> ```
+>
+> Its bundle id carries the scope (`@ebony-vinyl/dsh-our-free-model`), so it cannot
+> be mixed with the bare-name local install below in one profile — pick one.
+>
+> For any same-named package from another channel,
 > this repository is the source of truth.
 
 ### Command line (plain `dsh web`)
@@ -138,12 +148,12 @@ and installation contract rather than assuming every desktop shell shares this g
 To install manually as a real directory, use a trusted local tarball:
 
 1. Create `<DSH_HOME>/profiles/<profile>/vendor/`. From the reviewed repository, run `npm pack --ignore-scripts --pack-destination "<DSH_HOME>/profiles/<profile>/vendor"`, or place an official same-version release tarball from this repository there. Local packing does not publish to npm.
-2. Add `"dsh-our-free-model": "file:./vendor/dsh-our-free-model-2.7.2.tgz"` to the profile's `package.json` dependencies, then use the host's installation flow to resolve it. Keep the filename version aligned with this repository's `package.json`; do not substitute a same-named npm registry version.
+2. Add `"dsh-our-free-model": "file:./vendor/dsh-our-free-model-2.9.0.tgz"` to the profile's `package.json` dependencies, then use the host's installation flow to resolve it. Keep the filename version aligned with this repository's `package.json`; do not substitute a same-named npm registry version.
 3. Append `"dsh-our-free-model"` to `dsh.profile.bundles`.
 
 When the package manager owns the installed bytes, set `distribution: 'managed'` in the bundle config or plugin `settings.json`. The package manager then handles updates; in-app upgrades, announcement polling and hot reload stand down while model access remains available. For later updates, replace the trusted tarball and update its dependency path so the old lockfile cannot restore an older copy.
 
-If copying release files manually, copy the entire package, including `adapter/`, `src/`, `locale/`, `vendor/magpie/` metadata and licenses, and `vendor/channel-pack/`'s `pack.js`, WASM, LICENSE and NOTICE. Copying only entry scripts leaves channel loading incomplete.
+If copying release files manually, copy the entire package, including `adapter/`, `src/`, `locale/`, the engine resource directory under `vendor/` (`engine.json`, LICENSE, NOTICE and the platform binary), and `vendor/channel-pack/`'s `pack.js`, WASM, LICENSE and NOTICE. Copying only entry scripts leaves channel loading incomplete.
 
 > Do **not** also add an entry to `cordis.patch.yml`. A bundle referenced from
 > `dsh.profile.bundles` already applies its own patch layer, and registering it
@@ -360,7 +370,7 @@ A failed upgrade restores the previous version and reports why.
 
 DeepSeek Bridge connects to a local OpenAI-compatible endpoint using the bridge’s own API key.
 
-The **Aggregate** tab brings third-party endpoints into the same roster. The provider registry ships 77 entries (`src/providers/registry.json`, categorised `free | free-tier | apikey | oauth | local`): NVIDIA NIM, OpenRouter, Groq, Cerebras, SambaNova, Gemini, DeepSeek, Mistral, Together, Fireworks, SiliconFlow, Nebius, Chutes, Hugging Face, Cloudflare, Z.ai, Kimi, MiniMax, QwenCloud/Alibaba, Bedrock, Vertex, Vercel AI Gateway, Azure OpenAI, FleetRelay Gateway, and the local no-account ones — Ollama, LM Studio and llama.cpp. The data comes from free-claude-code's provider catalogue, 9router's provider registry, and the custom gateway added by this project. FleetRelay Gateway currently advertises `deepseek-v4.1-flash-free` and `gpt-6-astra`; its third-party T1 candidate is disabled pending distribution authorization.
+The **Aggregate** tab brings third-party endpoints into the same roster. The provider registry ships 77 entries (`src/providers/registry.json`, categorised `free | free-tier | apikey | oauth | local`): NVIDIA NIM, OpenRouter, Groq, Cerebras, SambaNova, Gemini, DeepSeek, Mistral, Together, Fireworks, SiliconFlow, Nebius, Chutes, Hugging Face, Cloudflare, Z.ai, Kimi, MiniMax, QwenCloud/Alibaba, Bedrock, Vertex, Vercel AI Gateway, Azure OpenAI, FleetRelay Gateway, and the local no-account ones — Ollama, LM Studio and llama.cpp. The registry uses official provider documentation, models.dev, 9router, and OFM-maintained records. Historical IDs previously sourced with reference to free-claude-code remain subject to [documented compatibility limits](docs/provider-compatibility.md). FleetRelay Gateway currently advertises `deepseek-v4.1-flash-free` and `gpt-6-astra`; its third-party T1 candidate is disabled pending distribution authorization.
 
 Once a provider is configured (a key for the ones that need one; the local no-account ones need none), each of its models becomes a catalog row named `provider/model`: selectable in the model picker and dialable through the local gateway. A provider's own wire format decides how it is served — OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages (the last two for the providers that only speak those).
 
@@ -374,7 +384,7 @@ Keys live only in the plugin's own `0600` `settings.json`, and the API never ech
 
 **The savings dashboard** shows bytes before → after, bytes saved, percent, blocks compacted and the number of calls measured — read from the same stats rows the usage charts use.
 
-**Five local answers** (ported from free-claude-code, each individually switchable, all on by default) never call a provider: a quota probe (`max_tokens:1` plus "quota" → `Quota check passed.`), shell command-prefix detection (`<policy_spec>` plus `Command:` → the prefix, refusing command injection), session-title generation (→ `Conversation`), suggestion mode (→ the empty string) and filepath extraction (→ a `<filepaths>` block). The local gateway answers them in-process.
+**Five local answers** (each individually switchable, all on by default) never call a provider: a quota probe (`max_tokens:1` plus "quota" → `Quota check passed.`), shell command-prefix detection (`<policy_spec>` plus `Command:` → the prefix, refusing command injection), session-title generation (→ `Conversation`), suggestion mode (→ the empty string) and filepath extraction (→ a `<filepaths>` block). The local gateway answers them in-process.
 
 ### Routing: named fallback chains (combos)
 
@@ -384,7 +394,7 @@ A named, ordered list of model ids across every lane, which appears in the picke
 
 Two new endpoints: `POST /v1/messages` (streaming and non-streaming, with correct `message_start` / `content_block_*` / `message_delta` / `message_stop` framing, `thinking` blocks, `tool_use` blocks, a real `stop_reason`, and an in-stream `error` event when a turn fails after the headers went out) and `POST /v1/messages/count_tokens` (a documented local estimate — the plugin ships no tokenizer). Claude Code and the Anthropic SDKs can therefore point straight at the plugin. The existing `/v1/chat/completions` and `/v1/responses` are unchanged, and `/v1/models` now advertises every lane, the aggregate rows and the chains included. A new *Connect a client* section on the gateway page renders ready-to-copy recipes generated from the port that actually bound and the key that is actually required: Claude Code environment variables, Codex `config.toml`, the OpenAI SDK, the Anthropic SDK, curl, and a LAN variant when the relay is up.
 
-One false success was fixed along the way: a turn whose only output was a tool call the caller never declared used to answer as a clean empty success; it now reports what happened, because the token saver's own `[full diff: rtk git diff --no-compact]` hint can make a model ask for a tool the caller does not have.
+One false success was fixed along the way: a turn whose only output was a tool call the caller never declared used to answer as a clean empty success; it now reports what happened, because the old hint could prompt the model to ask for the undeclared RTK CLI. The updated hint tells the user how to fetch the diff with compression off.
 
 ## How it works
 
@@ -414,14 +424,15 @@ src/token-saver/index.js compaction pipeline: prompt injection -> tool-output co
 src/token-saver/inject.js idempotent injection and stripping on the chat / messages /
                 responses wires
 src/token-saver/prompts.js the caveman and ponytail prompt families and their levels
-src/token-saver/rtk/ tool-output filters: git diff/status/log, grep, find, ls, tree,
+src/token-saver/compact/ tool-output filters: git diff/status/log, grep, find, ls, tree,
                 build logs, numbered dumps, search listings, duplicate log lines
 src/local-optimize.js the five local answers: quota, prefix, title, suggestion, filepath
 src/combos.js fallback chains: virtual catalog rows, two strategies, intersected capacities
 src/route/classify.js one failure vocabulary and cooldown policy for every lane
 src/trust.js    request trust fence for the plugin's routes (connection bridge
                 + structural fallback)
-src/push.js     SSE push hub: arrivals, update availability, upgrade done
+index.js        SSE push hub (createPushHub; src/push.js was folded in): arrivals,
+                update availability, upgrade done
 src/feed.js     remote announcement feed: multi-source fetch, validation, cache,
                 arrival detection
 src/updater.js  in-app upgrade: manifest validation, SHA-256 checks, backup,
@@ -698,6 +709,7 @@ it never touches files.
 ## Known limitations
 
 - **"No usage cap" means no cap to buy.** There is no balance, no plan and no per-token billing; the lane is metered by session rate, though, and hammering it surfaces as `429`. The plugin marks the model *quota reached* rather than hiding it, and the next probe clears the state.
+- **Upstream sessions are per-conversation.** Each conversation is pinned to one stable upstream session (the mapping is persisted in the data directory's `session-map.json`), so concurrent conversations never share upstream state. Turns that arrive without a conversation id (some host call shapes, local-gateway requests with no `user`/`conversation`) fall back to a reserved `global` session shared by all such turns, including their KV cache — run parallel sensitive conversations through a call shape that carries a conversation id; the plugin logs a one-time warning for the first id-less turn. The free lane meters quota per session, so a fresh session per id-less request is not an option — that is the cost of the quota model. Aggregate-lane requests additionally carry an `x-session-id` header so a provider that keeps per-session state cannot merge concurrent conversations on the same key; the EAC lane deliberately sends no session header, because its shared-pool admission gate does not recognize the free lane's session fingerprint.
 - **Some upstream models are slow.** `nemotron-3.5-lightning-free` measured over 30 s to first token in one run. That is upstream latency, and the dashboard reports it rather than hiding it.
 - **Output speed is sometimes `—`.** A model that answers in one or two large frames, or whose thinking never streams, has no window worth dividing. The panel says so instead of publishing the model's thinking time as decoding speed.
 - **Thinking is a silent wait, and it shares the output budget.** `mimo-v2.6-flash-free` measured 60–70 s of silence while the lane billed 3024 reasoning tokens and streamed not one reasoning frame; such a turn ends as `stop` with nothing visible, which clients report as an empty response. The forward endpoint and the LAN relay keep the connection alive with heartbeats — but that protects the connection, not the timeout: the SSE parser skips comment frames, and pi-ai's idle watchdog (`streamIdleTimeoutMs`, default 300 s) resets only when real content frames arrive, so a stall past 300 s on the wire still fails (issue #34). Only the caller can give it **budget**: raise the per-call output ceiling past 16k, or use a model the catalogue marks `reasoning: false`.
@@ -826,9 +838,9 @@ On privacy and trust, plainly:
   accept that upstream's terms of service and usage policy; throttling, bans or
   other consequences of violating them are yours to own. The plugin makes no
   promise about any upstream's availability, accuracy or continuity.
-- **The EAC lane is a shared, co-paid offer.** Its gateway is deployed by the
-  repository maintainer and unlocked by a GitHub login plus a star; it is for
-  authorized users only. Do not try to bypass the gate, resell, or share access —
+- **The EAC lane requires GitHub authorization.** Sign in to GitHub and star this
+  repository to unlock access at no cost. The project maintainers run the
+  gateway. Do not try to bypass the gate, resell, or share access —
   abuse tightens the lane for everyone.
 - **The plugin is not affiliated with, nor endorsed by, any of the upstreams.**
   Vendor names and trademarks belong to their owners and are cited only to name
@@ -853,8 +865,31 @@ On privacy and trust, plainly:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+OFM's own code is MIT — see [LICENSE](LICENSE). Third-party sources retain their applicable license terms.
 
 This project is an independent plugin and is not affiliated with, endorsed by, or
 sponsored by any model provider. Using it to reach free tiers is subject to those
 providers' own terms; check them before deploying anywhere beyond your own machine.
+
+## Thanks
+
+Thanks to [Jet (iJetLi)](https://gitee.com/iJetLi) for the channel pack
+(`vendor/channel-pack/`, MIT) — the login flows, account pools and local gateway
+for all ten built-in account channels come from it; its LICENSE and NOTICE.md
+sit in that directory.
+
+Thanks also to:
+
+- [models.dev](https://github.com/anomalyco/models.dev) (MIT) — model windows, output ceilings and thinking tiers. The catalogue data is used under MIT; the full text is in [LICENSE](LICENSE).
+- [9router](https://github.com/decolua/9router) (MIT) — origin of the eight evidence scripts under `scripts/probes/`. Those eight files are byte-for-byte copies with only the probe base URL changed; each carries its MIT attribution in the file header and the full licence is in [LICENSE](LICENSE#9router--mit). They import 9router's own modules, so they run only inside that project's checkout, and they are not part of the release set.
+- [magpie-muse-web](https://github.com/JohnWangggg/magpie-muse-web) (no SPDX licence declared upstream) — upstream of the `muse-web` bridge extension.
+
+**The following projects have no code or data left in this repository.** They are kept as a historical record only:
+
+- [opencode2api](https://github.com/jasonxu114514/opencode2api) (GPL-3.0) — the earliest reference for free-lane request shaping. 2.8.6 rewrote the implementation and deleted its assets; the current code shares no text, function name or constant table with that project, and works only from official assets generated from [sst/opencode](https://github.com/sst/opencode) v2.2.3 (MIT). See the [maintenance notes](src/o2a/SYNC.md).
+- [free-claude-code](https://github.com/Alishahryar1/free-claude-code) (AGPL-3.0-only) — the earliest reference for the provider directory and the five local answers. 2.8.6 rewrote the local answers and rebuilt the directory from models.dev; what survives is five optimization ids and some provider ids as **persisted configuration keys** (renaming one would silently re-enable an optimization a user had switched off). See [provider compatibility](docs/provider-compatibility.md).
+- [trae-mate](https://github.com/luckymiaow/trae-mate) (MIT) — an early reference for the TRAE check-in flow, since rewritten.
+- [dsh-cline-pass](https://github.com/codeOct/dsh-cline-pass) (MIT) — an early reference for Cline quota and request logging, since rewritten.
+- [rtk](https://github.com/rtk-ai/rtk) (CLI Apache-2.0, engine BUSL-1.1) — the earliest reference for the tool-output filters. `src/token-saver/compact/` has been rewritten in full; only RTK's output markers and thresholds remain, because those markers are a wire format a model has been trained to read — changing them would change model behaviour rather than make the code more original. The replacement scope is in the [2.8.6 verification notes](docs/verification/2026-11-18-independent-core.md).
+
+The root MIT licence covers only the code OFM wrote. The components and data still in use are provided under their own licences, whose full terms govern. This list is a provenance record and does not change any component's licence.

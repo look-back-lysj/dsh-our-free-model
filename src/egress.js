@@ -54,9 +54,13 @@ import tls from 'node:tls'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { spawn } from 'node:child_process'
+import { bunFetch, findBunExecutable } from './bun-fetch.js'
+import { restrictPermissions } from './open-external.js'
 
 /** The loopback address the relay listens on. Never a routable one. */
 const RELAY_HOST = '127.0.0.1'
@@ -88,9 +92,313 @@ const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'p
  */
 let activeRelay = null
 
+/**
+ * The OpenCode lane's own exits — a pool, not one address.
+ *
+ * The free tier's usage ceiling is counted per egress IP, so moving *this lane's*
+ * requests through a different exit is the one lever that moves the counter
+ * (issue #708). One address is not enough in practice: a burned IP answers every
+ * request with `429 FreeUsageLimitError` and a multi-hour `Retry-After`, so the
+ * lane needs somewhere else to go *within the same turn* — which is what the
+ * reference gateway does by walking a proxy list.
+ *
+ * Each entry is one dialable route:
+ *   - `url`     the parsed proxy address
+ *   - `pool`    a rotating pool endpoint (`#pool`): every connection already
+ *               exits from a different IP, so it is never cooled
+ *   - `coolingUntil` when a 429/abuse verdict last said this exit is spent
+ *   - `lastError`   the one-line reason the settings page shows
+ *
+ * Nothing here rotates on its own initiative: an exit is only skipped after the
+ * upstream said so about that exit.
+ */
+let laneExits = []
+/** How many distinct exits one request may try before giving up. */
+let laneMaxTries = 3
+
+/** Cooldowns. A 429 carries its own window; the rest are conservative guesses. */
+const LANE_ABUSE_COOLDOWN_MS = 15 * 60 * 1000
+const LANE_TRANSPORT_COOLDOWN_MS = 60 * 1000
+const LANE_QUOTA_DEFAULT_MS = 60 * 60 * 1000
+/**
+ * Ceiling on how long a 429 may keep one exit out of the pool.
+ *
+ * The `Retry-After` header is attacker-adjacent data and the upstream has
+ * answered it with values in the tens of thousands of seconds (measured:
+ * `Retry-After: 70411` on an exit that answered 200 seventeen minutes later).
+ * An unclamped cooldown removes a perfectly good exit from the pool for most of
+ * a day, and when every configured exit is cooling the pool is bypassed
+ * entirely — the exact outcome the pool exists to prevent. The ceiling covers
+ * the headerless fallback too, so no single 429 can take an exit out for longer
+ * than this. The same limit applies to the lane breaker in
+ * `src/core/runtime.js`; being wrong here costs one skipped request, being
+ * wrong the other way costs an exit.
+ */
+const LANE_QUOTA_MAX_MS = 30 * 60 * 1000
+
+/**
+ * Wordings the free tier uses for an IP-level abuse refusal (as opposed to a
+ * request-shape refusal, which another exit cannot fix). Lifted from the
+ * reference gateway's `abuse.go`, which measured them against the live upstream.
+ */
+const ABUSE_MARKERS = [
+  'abusive traffic',
+  'abuse traffic',
+  'abuse of traffic',
+  'free models aren\'t available',
+]
+
+/** Parse one configured entry, splitting a `#pool` / `pool+` marker. */
+function parseExitEntry(raw) {
+  let text = String(raw ?? '').trim()
+  if (text === '') return null
+  let pool = false
+  if (/^pool\+/i.test(text)) { text = text.slice(5).trim(); pool = true }
+  if (/#pool$/i.test(text)) { text = text.replace(/#pool$/i, '').trim(); pool = true }
+  const parsed = new URL(text)
+  if (!CLIENT_SCHEMES.has(parsed.protocol)) {
+    throw new Error(`unsupported proxy scheme "${parsed.protocol}" in "${text}" — use http, https, socks5 or socks5h`)
+  }
+  return { url: parsed, pool, coolingUntil: 0, lastError: '' }
+}
+
+/**
+ * Point the OpenCode lane at a set of exits.
+ *
+ * Accepts an array of addresses, or a single address string (the older shape).
+ * `#pool` / `pool+` marks a rotating pool endpoint. Invalid addresses throw: a
+ * typo'd proxy must fail loudly at save time, not on the first turn. An empty
+ * list clears the pool and the lane falls back to the global outlet, then the
+ * environment, then direct.
+ */
+export function setFreeLaneProxies(list) {
+  const entries = typeof list === 'string' ? [list] : Array.isArray(list) ? list : []
+  const next = []
+  const seen = new Set()
+  for (const raw of entries) {
+    const exit = parseExitEntry(raw)
+    if (exit === null) continue
+    // Deduplicate on the dial URL: the same endpoint listed twice is one exit.
+    const key = `${exit.url.href}${exit.pool ? '#pool' : ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    next.push(exit)
+  }
+  // Carry the cooldown of an exit that survived the edit, so saving an unrelated
+  // setting does not resurrect an IP the upstream just blocked.
+  for (const exit of next) {
+    const previous = laneExits.find(old => old.url.href === exit.url.href)
+    if (previous !== undefined) {
+      exit.coolingUntil = previous.coolingUntil
+      exit.lastError = previous.lastError
+    }
+  }
+  laneExits = next
+}
+
+/** Single-address convenience wrapper (the pre-pool settings shape). */
+export function setFreeLaneProxy(url) {
+  setFreeLaneProxies(String(url ?? '').trim() === '' ? [] : [url])
+}
+
+/** How many exits the lane may try per request. Clamped to something sane. */
+export function setFreeLaneMaxTries(value) {
+  const number = Number(value)
+  laneMaxTries = Number.isFinite(number) && number >= 1 ? Math.min(8, Math.trunc(number)) : 3
+}
+
+/** Whether any lane exit is configured. */
+export function freeLaneProxyActive() {
+  return laneExits.length > 0
+}
+
+/** The configured addresses, in order, without credentials (for the settings page). */
+export function freeLaneExitSnapshot() {
+  const now = Date.now()
+  return laneExits.map(exit => ({
+    // `outletLabel` is the same mask the global outlet uses: protocol, host and
+    // port only — never userinfo, path or query, which routinely carry tokens.
+    label: outletLabel(exit.url.href),
+    pool: exit.pool,
+    coolingMs: exit.pool ? 0 : Math.max(0, exit.coolingUntil - now),
+    lastError: exit.lastError,
+  }))
+}
+
+/** Clear every exit's cooldown. Used by the settings page's "clear" button. */
+export function clearLaneExits() {
+  let cleared = 0
+  for (const exit of laneExits) {
+    if (exit.coolingUntil === 0 && exit.lastError === '') continue
+    exit.coolingUntil = 0
+    exit.lastError = ''
+    cleared += 1
+  }
+  return cleared
+}
+
+/** Is this exit usable right now? */
+function exitUsable(exit, now) {
+  // A pool endpoint rotates its own exit IP per connection, so an upstream 429
+  // says nothing durable about it — cooling it would only throw away the one
+  // route that might already be somewhere else.
+  if (exit.pool) return true
+  return exit.coolingUntil <= now
+}
+
+/**
+ * Choose the exits one request may try, in order.
+ *
+ * The first pick is stable per session (a conversation keeps one exit, so its
+ * quota accounting stays coherent), and the rest are the other usable exits in
+ * configuration order. With no session signal the walk starts round-robin, which
+ * spreads unrelated turns across the pool.
+ */
+function laneExitCandidates(session) {
+  const now = Date.now()
+  const usable = laneExits.filter(exit => exitUsable(exit, now))
+  if (usable.length === 0) return []
+  let start = 0
+  if (typeof session === 'string' && session !== '') {
+    let hash = 0
+    for (let index = 0; index < session.length; index++) hash = (hash * 31 + session.charCodeAt(index)) >>> 0
+    start = hash % usable.length
+  } else {
+    laneRoundRobin = (laneRoundRobin + 1) % usable.length
+    start = laneRoundRobin
+  }
+  const ordered = []
+  for (let offset = 0; offset < usable.length; offset++) ordered.push(usable[(start + offset) % usable.length])
+  return ordered
+}
+
+/** Round-robin cursor for turns that carry no session signal. */
+let laneRoundRobin = 0
+
+/**
+ * Record what one exit's attempt produced, so the pool learns which route is
+ * spent. `status` is the HTTP status, or undefined for a transport failure.
+ */
+function noteLaneExitResult(exit, status, retryAfterMs, bodyText) {
+  if (exit === null || exit.pool) return
+  if (status === 429) {
+    const asked = Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : LANE_QUOTA_DEFAULT_MS
+    // Clamp: see LANE_QUOTA_MAX_MS. A 429 on one exit says "this IP is spent
+    // now", not "for the rest of the day".
+    exit.coolingUntil = Date.now() + Math.min(asked, LANE_QUOTA_MAX_MS)
+    exit.lastError = 'the upstream quota window is closed on this exit'
+    return
+  }
+  if (status === 403 && isAbuseRefusal(bodyText)) {
+    exit.coolingUntil = Date.now() + LANE_ABUSE_COOLDOWN_MS
+    exit.lastError = 'the upstream flagged this exit\'s IP for abusive traffic'
+    return
+  }
+  if (status === undefined) {
+    exit.coolingUntil = Date.now() + LANE_TRANSPORT_COOLDOWN_MS
+    exit.lastError = 'this exit could not be reached'
+    return
+  }
+  // Anything else is about the request, not the route: leave the exit alone.
+  exit.lastError = ''
+}
+
+/** Does this 403 body describe an IP-level abuse refusal? */
+function isAbuseRefusal(text) {
+  if (typeof text !== 'string' || text === '') return false
+  const lower = text.toLowerCase()
+  return ABUSE_MARKERS.some(marker => lower.includes(marker))
+}
+
+/** Parse a `retry-after` header (seconds or HTTP date) into milliseconds. */
+function laneRetryAfterMs(value) {
+  if (value === null || value === undefined || value === '') return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
+  const date = Date.parse(String(value))
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined
+}
+
+/** The session a request belongs to, read off its headers (no new parameter). */
+function sessionOf(init) {
+  const headers = init?.headers
+  if (headers === null || headers === undefined) return ''
+  const read = name => typeof headers.get === 'function' ? headers.get(name)
+    : headers[name] ?? headers[name.toLowerCase()]
+  return String(read('x-opencode-session') ?? read('x-session-id') ?? '')
+}
+
+/**
+ * The proxy address the environment names for this lane (`envProxyFor`), or
+ * null. Exactly the three variables issue #708 used: `HTTPS_PROXY` (this
+ * lane's targets are https), falling back to `HTTP_PROXY`, minus anything
+ * `NO_PROXY` excludes. Only opencode.ai is ever matched here — the lane's own
+ * host — so a broad `NO_PROXY` cannot silently un-proxy the plugin's other
+ * traffic (those never consulted the environment to begin with).
+ */
+export function envProxyFor(hostname) {
+  const noProxy = String(process.env.NO_PROXY ?? process.env.no_proxy ?? '')
+  if (noProxy.trim() === '*') return undefined
+  const host = String(hostname ?? '').toLowerCase()
+  for (const entry of noProxy.split(',').map(item => item.trim().toLowerCase()).filter(Boolean)) {
+    const bare = entry.replace(/^\./, '')
+    if (host === bare || host.endsWith(`.${bare}`)) return undefined
+  }
+  const https = process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.httpsproxy
+  if (https) return new URL(String(https))
+  const httpProxy = process.env.HTTP_PROXY ?? process.env.http_proxy ?? process.env.httpproxy
+  if (httpProxy) return new URL(String(httpProxy))
+  return undefined
+}
+
 /** True when requests will be rewritten onto the relay instead of going out direct. */
 export function egressActive() {
   return activeRelay !== null
+}
+
+/**
+ * Which exit the OpenCode lane would use right now, and what that exit's
+ * public address is (`laneProxyEcho`) — the settings page's "测试出口" button.
+ * The echo service is third-party on purpose: nothing here dials the free
+ * lane's gateway, so a test never spends quota. When the effective exit is the
+ * environment's or a custom address, the echo request dials through it (the
+ * same `openTunnel` the relay uses); a direct exit answers without a proxy.
+ */
+export async function laneProxyEcho({ signal, timeoutMs = 8000, proxy: requested } = {}) {
+  const target = new URL('https://api.ipify.org/?format=json')
+  // A named exit wins (the settings page tests one row at a time), then the exit
+  // this lane would pick for a session-less turn, then the environment, then
+  // direct.
+  let proxy = null
+  let source = 'direct'
+  if (typeof requested === 'string' && requested.trim() !== '') {
+    proxy = parseExitEntry(requested)?.url ?? null
+    source = 'custom'
+  } else {
+    const candidates = laneExitCandidates('')
+    if (candidates.length > 0) { proxy = candidates[0].url; source = 'custom' }
+    else {
+      const fromEnv = envProxyFor(target.hostname)
+      if (fromEnv !== undefined) { proxy = fromEnv; source = 'env' }
+    }
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  timer.unref?.()
+  signal?.addEventListener('abort', () => controller.abort(), { once: true })
+  try {
+    let response
+    if (proxy !== null) {
+      response = await laneProxiedFetch(target.href, { headers: { accept: 'application/json' }, signal: controller.signal }, proxy)
+    } else {
+      response = await fetch(target, { headers: { accept: 'application/json' }, signal: controller.signal, redirect: 'error' })
+    }
+    if (!response.ok) throw new Error(`the echo answered HTTP ${response.status}`)
+    const payload = await response.json()
+    return { ip: String(payload.ip ?? ''), proxied: proxy !== null, source }
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /**
@@ -103,7 +411,201 @@ export function egressActive() {
  */
 export async function egressFetch(url, init) {
   const relay = activeRelay
+  const targetUrl = new URL(url instanceof Request ? url.url : String(url))
+  // Only the official OC inference lane uses Bun. Kilo/EAC/catalogs and local
+  // test endpoints keep their existing fetch path. Never retry a failed turn
+  // through a second transport: a prior request may already have spent tokens.
+  const officialFreeLane = targetUrl.protocol === 'https:' && targetUrl.hostname === 'opencode.ai'
+    && (targetUrl.port === '' || targetUrl.port === '443') && targetUrl.pathname.startsWith('/inference/')
+  const transport = process.env.OUR_FREE_MODEL_FREE_TRANSPORT ?? 'auto'
+  if (officialFreeLane) {
+    // Exit priority: the lane's own pool first (issue #708's method, made
+    // explicit), then the global egress outlet, then the environment's
+    // HTTP(S)_PROXY, then direct. A lane pool deliberately bypasses the global
+    // outlet: the point of setting one is that this lane exits elsewhere.
+    const candidates = laneExitCandidates(sessionOf(init))
+    const poolExits = candidates.slice(0, Math.max(1, laneMaxTries))
+    // The relay, the environment and a direct dial are all one route, so they
+    // never take part in the pool walk — a 429 there is not something another
+    // configured exit can fix.
+    const fallbackProxy = poolExits.length > 0 ? null
+      : relay !== null ? new URL(`http://ofm:${relay.key}@${RELAY_HOST}:${relay.port}`)
+        : envProxyFor(targetUrl.hostname) ?? null
+    const isPost = (init?.method ?? (url instanceof Request ? url.method : 'GET')).toUpperCase() !== 'GET'
+
+    /**
+     * One attempt through one exit.
+     *
+     * `init` is passed through untouched: it carries the caller's `AbortSignal`,
+     * and that signal is what makes a turn cancellable. An earlier revision of
+     * this function took a per-attempt `signal` parameter that no caller ever
+     * supplied, so `{ ...init, signal }` overwrote a real signal with
+     * `undefined` — every lane request through an exit became uncancellable,
+     * including the Bun child process, which `bunFetch` only kills when it sees
+     * an abort. There is no per-attempt signal today; do not reintroduce one
+     * without threading it from the caller.
+     */
+    const attempt = exit => {
+      const proxy = exit !== null ? exit.url : fallbackProxy
+      if (transport === 'node') {
+        if (relay !== null && relay.dead) throw new Error('the configured egress relay is not running')
+        return proxy !== null ? laneProxiedFetch(url, init, proxy) : fetch(url, init)
+      }
+      if (transport !== 'auto' && transport !== 'bun') throw new Error('OUR_FREE_MODEL_FREE_TRANSPORT must be auto, bun, or node')
+      // The GET listing may ride Node: it is a read, not an inference turn, and a
+      // machine without Bun must still be able to learn the roster. Only the POST
+      // inference keeps the Bun requirement — the upstream fingerprints its
+      // client there. The read still leaves through the lane's own exit.
+      if (!isPost) {
+        if (proxy !== null) return laneProxiedFetch(url, init, proxy)
+        if (relay !== null) return relayFetch(url, init, relay)
+        return fetch(url, init)
+      }
+      const executable = findBunExecutable()
+      if (!executable) {
+        // This sentence is the user's only answer until they install Bun, so it
+        // carries the fix inline, bilingually, without an "upstream failed" wrap.
+        const error = new Error('OpenCode 免费车道推理需要本机 Bun：请安装 Bun（https://bun.sh 或 npm i -g bun）后重试，或把 Bun 可执行文件路径写入 OUR_FREE_MODEL_BUN 环境变量。/ Install Bun or set OUR_FREE_MODEL_BUN to its executable path (OUR_FREE_MODEL_FREE_TRANSPORT=node restores the legacy transport).')
+        error.laneConfig = true
+        throw error
+      }
+      if (relay?.dead) throw new Error('the configured egress relay is not running')
+      // With no explicit proxy, the Bun worker inherits this process's
+      // HTTP_PROXY/HTTPS_PROXY/NO_PROXY — Bun honors them natively, which is
+      // exactly the configuration issue #708's script used.
+      const bunProxy = proxy !== null ? proxy.href : undefined
+      if (url instanceof Request) {
+        return (async () => {
+          const request = new Request(url, init)
+          const body = request.body ? new Uint8Array(await request.arrayBuffer()) : undefined
+          // `request.signal` is the signal that survived construction: either
+          // `init.signal` or the one the Request itself carries.
+          return bunFetch(request.url, { ...init, method: request.method, headers: request.headers, body, signal: request.signal, redirect: request.redirect }, { executable, proxy: bunProxy })
+        })()
+      }
+      return bunFetch(url, init, { executable, proxy: bunProxy })
+    }
+
+    if (poolExits.length === 0) return attempt(null)
+
+    /**
+     * Walk the pool until an exit answers something other than "this exit is
+     * spent". Only two verdicts move to the next exit:
+     *
+     *   - `429` — the quota window is closed for THIS egress IP. The same bytes
+     *     from another IP may well succeed, and the reference gateway does
+     *     exactly this walk.
+     *   - a `403` whose body names abusive traffic — an IP-level block, again
+     *     specific to the exit.
+     *
+     * A transport failure moves on too: the exit is unreachable, which says
+     * nothing about the request. Everything else — a 400, a shape 403, a 5xx —
+     * is about the request or the upstream as a whole, so it is returned as-is
+     * rather than spending every remaining exit on an answer that will not change.
+     */
+    let lastError
+    for (let index = 0; index < poolExits.length; index++) {
+      const exit = poolExits[index]
+      let response
+      try {
+        response = await attempt(exit)
+      } catch (error) {
+        noteLaneExitResult(exit, undefined)
+        lastError = error
+        // A lane-configuration refusal (no Bun, a dead relay) is not about this
+        // exit; re-walking would only repeat it.
+        if (error?.laneConfig === true) throw error
+        if (index + 1 < poolExits.length) continue
+        throw error
+      }
+      if (response.status !== 429 && response.status !== 403) {
+        noteLaneExitResult(exit, response.status)
+        return response
+      }
+      const retryAfterMs = laneRetryAfterMs(response.headers.get('retry-after'))
+      if (response.status === 429) {
+        noteLaneExitResult(exit, 429, retryAfterMs)
+        if (index + 1 >= poolExits.length) return response
+        // Release the body before abandoning this attempt; an unread 429 body
+        // otherwise holds the connection open.
+        await response.body?.cancel().catch(() => {})
+        continue
+      }
+      // A 403 is only exit-specific when it names the IP. Read a bounded prefix
+      // and hand the whole body back, so a shape refusal reaches the caller
+      // byte-identical to what the upstream sent.
+      const peeked = await peekBody(response, 4096)
+      if (!isAbuseRefusal(peeked.text)) {
+        noteLaneExitResult(exit, 403)
+        return peeked.response
+      }
+      noteLaneExitResult(exit, 403, undefined, peeked.text)
+      if (index + 1 >= poolExits.length) return peeked.response
+      await peeked.response.body?.cancel().catch(() => {})
+    }
+    if (lastError !== undefined) throw lastError
+    // Unreachable: the loop returns or throws on every path.
+    return attempt(poolExits[0])
+  }
   if (relay === null) return fetch(url, init)
+  return relayFetch(url, init, relay)
+}
+
+/**
+ * Read at most `limit` bytes of a response body and put them back in front.
+ *
+ * Classifying a 403 needs its message; forwarding it needs the whole body. The
+ * replayed Response carries the original status, statusText and headers, and its
+ * stream yields the peeked bytes first — so a caller that was going to read the
+ * body still sees exactly what the upstream sent.
+ */
+async function peekBody(response, limit) {
+  if (response.body === null) return { text: '', response }
+  const reader = response.body.getReader()
+  const chunks = []
+  let total = 0
+  while (total < limit) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    total += value.byteLength
+  }
+  const head = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)))
+  const text = head.toString('utf8')
+  const rest = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(head))
+      // Pump whatever is left, then close. The reader is already positioned past
+      // the peeked bytes, so this is the untouched remainder.
+      void (async () => {
+        try {
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            controller.enqueue(value)
+          }
+          controller.close()
+        } catch (error) {
+          controller.error(error)
+        }
+      })()
+    },
+    cancel(reason) {
+      return reader.cancel(reason)
+    },
+  })
+  return {
+    text,
+    response: new Response(rest, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    }),
+  }
+}
+
+/** Rewrite one request onto the loopback relay (`egressFetch`'s second half). */
+function relayFetch(url, init, relay) {
   const request = url instanceof Request ? new Request(url, init) : null
   const target = new URL(request ? request.url : String(url))
   if (target.protocol !== 'http:' && target.protocol !== 'https:') {
@@ -117,6 +619,74 @@ export async function egressFetch(url, init) {
     redirect: request.redirect, ...(request.body ? { duplex: 'half' } : {}),
   } : init
   return fetch(`http://${RELAY_HOST}:${relay.port}${target.pathname}${target.search}`, { ...outgoing, headers })
+}
+
+/**
+ * One proxied request dialled in-process (`laneProxiedFetch`).
+ *
+ * The Bun worker's fetch accepts a `proxy` per request; Node's own fetch does
+ * not, and the global relay is process-wide by design. When the lane's exit
+ * has to differ from the process's — a custom lane address, or the
+ * environment's `HTTP(S)_PROXY` on the `node` transport — this is the seam:
+ * the same `openTunnel` the relay uses dials the proxy, the one-shot agent
+ * hands the socket to `http.request`, and the response streams back as a
+ * plain `Response`. Streaming cadence, abort semantics and `redirect: 'error'`
+ * match what `postStreamed` expects of `fetch`.
+ */
+async function laneProxiedFetch(url, init, proxyUrl) {
+  const target = new URL(url instanceof Request ? url.url : String(url))
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+    throw new Error(`the lane proxy only carries http(s) targets, got "${target.protocol}"`)
+  }
+  const socket = await openTunnel(target, { kind: 'url', url: proxyUrl })
+  const agent = new http.Agent({ keepAlive: false })
+  agent.createConnection = () => socket
+  const request = url instanceof Request ? new Request(url, init) : null
+  const headers = new Headers(request?.headers ?? init?.headers ?? {})
+  headers.set('host', target.host)
+  headers.delete('transfer-encoding')
+  const headerObject = {}
+  for (const [name, value] of headers.entries()) headerObject[name] = value
+  const outgoing = http.request({
+    method: request?.method ?? init?.method ?? 'GET',
+    path: `${target.pathname}${target.search}`,
+    headers: headerObject,
+    agent,
+  })
+  const signal = init?.signal ?? request?.signal
+  const tear = () => { outgoing.destroy(); socket.destroy() }
+  const onAbort = () => tear()
+  signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    const upstream = await new Promise((resolve, reject) => {
+      outgoing.on('response', resolve)
+      outgoing.on('error', reject)
+      const body = request?.body ?? init?.body ?? null
+      if (body === null || body === undefined) { outgoing.end(); return }
+      if (typeof body === 'string' || body instanceof Uint8Array) { outgoing.end(body); return }
+      // Node streams the request body through the same tunnel; flow control
+      // belongs to the two pipes. A pipeline error destroys both sides.
+      pipeline(body, outgoing, () => {})
+    })
+    const responseHeaders = new Headers()
+    for (const [name, value] of Object.entries(upstream.headers)) {
+      if (HOP_BY_HOP.has(name)) continue
+      for (const entry of Array.isArray(value) ? value : [value]) responseHeaders.append(name, String(entry))
+    }
+    // The one-shot tunnel lives exactly as long as the response: finished,
+    // destroyed or cancelled by the consumer, the socket goes with it.
+    upstream.on('close', () => socket.destroy())
+    const webBody = Readable.toWeb(upstream, { strategy: { highWaterMark: 64 * 1024 } })
+    return new Response(webBody, { status: upstream.statusCode ?? 502, statusText: upstream.statusMessage, headers: responseHeaders })
+  } catch (error) {
+    tear()
+    if (signal?.aborted === true || error?.name === 'AbortError') {
+      throw new DOMException('The operation was aborted.', 'AbortError')
+    }
+    throw error
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
+  }
 }
 
 /**
@@ -165,6 +735,7 @@ export async function startEgressRelay({ config, dataDir, log = () => {}, onDead
       auth: outletAuth,
       logFile: path.join(dir, 'mihomo.log'),
     }), { mode: 0o600 })
+    restrictPermissions(configPath)
     child = spawn(binary, ['-d', dir, '-f', configPath], { windowsHide: true, stdio: 'ignore' })
     let spawnError = null
     let exited = null
@@ -193,6 +764,7 @@ export async function startEgressRelay({ config, dataDir, log = () => {}, onDead
 
   const sockets = new Set()
   const server = http.createServer(relayRequest)
+  server.on('connect', relayConnect)
   server.on('connection', socket => {
     sockets.add(socket)
     socket.on('close', () => sockets.delete(socket))
@@ -334,6 +906,52 @@ function relayRequest(req, res) {
   })
 }
 
+/**
+ * Authenticated TLS passthrough for the Bun worker. The existing HTTP relay
+ * terminates TLS in Node; CONNECT instead preserves Bun's upstream handshake
+ * while retaining the configured HTTP/HTTPS/SOCKS/managed-mihomo outlet.
+ * This intentionally accepts the OC host only, not an arbitrary proxy target.
+ */
+function relayConnect(req, client, head) {
+  const relay = activeRelay
+  const authorization = String(req.headers['proxy-authorization'] ?? '')
+  let credential = ''
+  if (/^Basic /i.test(authorization)) credential = Buffer.from(authorization.slice(6), 'base64').toString('utf8')
+  if (!relay || relay.dead || !sameSecret(credential, `ofm:${relay.key}`)) {
+    client.end('HTTP/1.1 407 Proxy Authentication Required\r\nConnection: close\r\nProxy-Authenticate: Basic realm="ofm"\r\n\r\n')
+    return
+  }
+  if (String(req.url).toLowerCase() !== 'opencode.ai:443') {
+    client.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+    return
+  }
+  // http: here is deliberate: openTunnel must return raw TCP, not Node TLS.
+  let upstream
+  const close = () => { client.destroy(); upstream?.destroy() }
+  client.on('error', close)
+  client.on('close', () => upstream?.destroy())
+  // CONNECT sockets can remain half-open after the worker sends FIN. Before
+  // piping begins there is no stream handler to finish that half-close.
+  client.once('end', close)
+  // Own the socket from the initial dial, not just after CONNECT/SOCKS/TLS
+  // succeeds: cancellation and relay.close() can happen during any stage.
+  void openTunnel(new URL('http://opencode.ai:443'), relay.outlet, socket => {
+    upstream = socket
+    if (client.destroyed) socket.destroy()
+  }).then(socket => {
+    client.off('end', close)
+    upstream = socket
+    if (client.destroyed) { socket.destroy(); return }
+    socket.on('error', close)
+    socket.on('close', () => client.destroy())
+    client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+    if (head.length > 0) socket.write(head)
+    client.pipe(socket).pipe(client)
+  }).catch(() => {
+    if (!client.destroyed) client.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
+  })
+}
+
 /** The outlet the running relay dials; `null` between generations. */
 function activeRelayOutlet() {
   return activeRelay?.outlet ?? null
@@ -357,18 +975,18 @@ function failOnce(res, error) {
  * Connect to `upstream` through `outlet` and return a socket ready for plain
  * http framing — already TLS-wrapped when the target is https.
  */
-async function openTunnel(upstream, outlet) {
+export async function openTunnel(upstream, outlet, onSocket) {
   const isTls = upstream.protocol === 'https:'
   const host = upstream.hostname
   const port = Number(upstream.port) || (isTls ? 443 : 80)
   let socket
   if (outlet.kind === 'url') {
     const proxy = outlet.url
-    if (proxy.protocol === 'http:' || proxy.protocol === 'https:') socket = await httpConnect(proxy, host, port)
-    else if (proxy.protocol === 'socks5:' || proxy.protocol === 'socks5h:') socket = await socks5Connect(proxy, host, port, proxy.protocol === 'socks5h:')
+    if (proxy.protocol === 'http:' || proxy.protocol === 'https:') socket = await httpConnect(proxy, host, port, onSocket)
+    else if (proxy.protocol === 'socks5:' || proxy.protocol === 'socks5h:') socket = await socks5Connect(proxy, host, port, proxy.protocol === 'socks5h:', onSocket)
     else throw new Error(`unsupported proxy scheme "${proxy.protocol}"`)
   } else {
-    socket = await netConnect(host, port)
+    socket = await netConnect(host, port, onSocket)
   }
   if (!isTls) return socket
   return await withTimeout(new Promise((resolve, reject) => {
@@ -380,30 +998,33 @@ async function openTunnel(upstream, outlet) {
     })
     secured.once('secureConnect', () => resolve(secured))
     secured.once('error', error => { secured.destroy(); reject(error) })
+    onSocket?.(secured)
   }), DIAL_TIMEOUT_MS, 'target TLS handshake', socket)
 }
 
 /** Plain TCP with the dial budget applied. */
-function netConnect(host, port) {
+function netConnect(host, port, onSocket) {
+  const socket = net.connect({ host, port })
   return withTimeout(new Promise((resolve, reject) => {
-    const socket = net.connect({ host, port })
     socket.once('connect', () => resolve(socket))
     socket.once('error', reject)
-  }), DIAL_TIMEOUT_MS, 'tcp connect')
+    onSocket?.(socket)
+  }), DIAL_TIMEOUT_MS, 'tcp connect', socket)
 }
 
 /**
  * HTTP CONNECT through an http(s) proxy — including the local mixed port a
  * managed mihomo opens, which speaks CONNECT like any other proxy.
  */
-async function httpConnect(proxy, targetHost, targetPort) {
-  let socket = await netConnect(proxy.hostname, Number(proxy.port) || (proxy.protocol === 'https:' ? 443 : 80))
+async function httpConnect(proxy, targetHost, targetPort, onSocket) {
+  let socket = await netConnect(proxy.hostname, Number(proxy.port) || (proxy.protocol === 'https:' ? 443 : 80), onSocket)
   try {
     if (proxy.protocol === 'https:') {
       socket = await withTimeout(new Promise((resolve, reject) => {
         const secured = tls.connect({ socket, servername: net.isIP(proxy.hostname) === 0 ? proxy.hostname : undefined })
         secured.once('secureConnect', () => resolve(secured))
         secured.once('error', error => { secured.destroy(); reject(error) })
+        onSocket?.(secured)
       }), DIAL_TIMEOUT_MS, 'proxy TLS handshake', socket)
     }
     const auth = proxy.username === '' ? '' : `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString('base64')}\r\n`
@@ -432,8 +1053,8 @@ async function httpConnect(proxy, targetHost, targetPort) {
  * exit must see the name, not this machine's DNS answer. Plain `socks5`
  * resolves locally first, per the scheme's definition.
  */
-async function socks5Connect(proxy, targetHost, targetPort, resolveAtProxy) {
-  const socket = await netConnect(proxy.hostname, Number(proxy.port) || 1080)
+async function socks5Connect(proxy, targetHost, targetPort, resolveAtProxy, onSocket) {
+  const socket = await netConnect(proxy.hostname, Number(proxy.port) || 1080, onSocket)
   try {
     const withAuth = proxy.username !== ''
     socket.write(Buffer.from(withAuth ? [0x05, 0x02, 0x00, 0x02] : [0x05, 0x01, 0x00]))
@@ -518,6 +1139,7 @@ function encodeAddress(resolved) {
  * past the mark so the caller can push them back with `unshift`.
  */
 function readUntil(socket, timeoutMs, what, matcher) {
+  if (socket.destroyed) return Promise.reject(new Error(`the proxy closed during the ${what}`))
   return withTimeout(new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
@@ -562,8 +1184,14 @@ function readUntil(socket, timeoutMs, what, matcher) {
 /** Reject after `ms`, tearing the socket down so nothing leaks half-open. */
 function withTimeout(promise, ms, what, socket) {
   let timer
+  let onClose
   return Promise.race([
-    promise.finally(() => clearTimeout(timer)),
+    promise,
+    new Promise((_, reject) => {
+      onClose = () => reject(new Error(`the socket closed during the ${what}`))
+      if (socket?.destroyed) onClose()
+      else socket?.once('close', onClose)
+    }),
     new Promise((_, reject) => {
       timer = setTimeout(() => {
         socket?.destroy?.()
@@ -571,7 +1199,10 @@ function withTimeout(promise, ms, what, socket) {
       }, ms)
       timer.unref?.()
     }),
-  ])
+  ]).finally(() => {
+    clearTimeout(timer)
+    socket?.off('close', onClose)
+  })
 }
 
 /** A free loopback port. Small bind/close race is acceptable — a collision surfaces as a clean startup error, not a corrupt state. */

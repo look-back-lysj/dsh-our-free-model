@@ -190,5 +190,15 @@ check('the view takes a thunk and consults it from the moment the service appear
   assert.equal(rejectionFor(req({ host: 'evil.example' }), view), 401)
 })
 
+check('the Host-admitted owner can use a required route on DSH 0.2.3', () => {
+  const legacy = connectionAdmissionView(() => ({}))
+  const request = req({ host: 'localhost' })
+  const owner = { principal: { kind: 'owner' }, signal: new AbortController().signal }
+  assert.equal(rejectionFor(request, legacy, undefined, owner), undefined)
+  assert.equal(rejectionFor(request, legacy, undefined, { ...owner, signal: AbortSignal.abort() }), 403)
+  assert.equal(rejectionFor(request, legacy, undefined, { ...owner, principal: { kind: 'guest' } }), 403)
+  assert.equal(rejectionFor(request, legacy), 503)
+})
+
 if (failures === 0) console.log('trust-test: OK')
 else { console.error(`trust-test: ${failures} failure(s)`); process.exit(1) }

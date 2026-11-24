@@ -43,3 +43,9 @@ packages/desktop/src-tauri/.node-license-cache/
 packages/desktop/node_modules/
 
 _audit/
+
+# Upstream OpenCode sources fetched by scripts/fetch-opencode-assets.mjs. They are
+# inputs to the asset build, not part of the repository: the generated assets in
+# src/o2a/assets/ are what ships, and docs/opencode-assets.md records their
+# provenance and per-file digests.
+.build-cache/

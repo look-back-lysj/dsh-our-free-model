@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { CLIENT_UA } from '../src/o2a/version.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-standalone-'))
@@ -36,7 +37,9 @@ const upstream = http.createServer((req, res) => {
   const chunks = []
   req.on('data', chunk => chunks.push(chunk))
   req.on('end', () => {
-    if (req.url.startsWith('/inference/v1/')) {
+    // The 2.1 client groups /inference routes by provider family
+    // (/inference/openai/v1/...), so the fingerprint mock matches the origin prefix.
+    if (req.url.startsWith('/inference/')) {
       anonymousRequests.push({ method: req.method, headers: req.headers })
       // v2 指纹：上游只认 `opencode/<channel>/<version>/<client>` 这一整串。
       // 旧实现模拟的是「按名字拒掉独立服务的归属 UA」，那条规则属于 v1；
@@ -106,7 +109,13 @@ async function child(args, env = {}) {
     let stderr = ''
     proc.stdout.on('data', chunk => { stdout += chunk })
     proc.stderr.on('data', chunk => { stderr += chunk })
-    const deadline = setTimeout(() => { proc.kill(); reject(new Error('child timed out')) }, 10000)
+    // The isolation case boots a whole standalone service in a fresh process:
+    // module graph, engine probe and a health round trip. Measured on a loaded
+    // Windows box that is 2 s when idle and 11 s under contention, so a 10 s
+    // deadline turned the suite into a coin flip. The deadline exists to catch
+    // a hang, not to time a boot — 30 s still fails fast on a real hang while
+    // leaving room for a slow machine.
+    const deadline = setTimeout(() => { proc.kill(); reject(new Error('child timed out')) }, 30000)
     proc.once('error', error => { clearTimeout(deadline); reject(error) })
     proc.once('exit', code => { clearTimeout(deadline); resolve({ code, stdout, stderr }) })
   })
@@ -261,7 +270,7 @@ try {
     assert.ok(anonymousRequests.some(req => req.method === 'GET'))
     assert.ok(anonymousRequests.filter(req => req.method === 'POST').length >= 4)
     for (const req of anonymousRequests) {
-      assert.equal(req.headers['user-agent'], 'opencode/latest/2.0.26/cli')
+      assert.equal(req.headers['user-agent'], CLIENT_UA)
     }
   })
   await check('unknown models are refused before spending an upstream call', async () => {

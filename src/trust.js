@@ -82,9 +82,15 @@ export function connectionAdmissionView(service) {
  * @param {object|undefined} connection - the harness `connection` service, when the composition mounts one
  * @param {(decision: {status: number, source: string, reason: string}) => void} [onRejection]
  *   fixed diagnostic fields only; never request headers or error text
+ * @param {object} [peer] - Peer supplied by the Host after authorizing this HTTP route.
  * @returns {number|undefined}
  */
-export function rejectionFor(req, connection, onRejection) {
+export function rejectionFor(req, connection, onRejection, peer) {
+  // DSH 0.2.3 authorizes required routes before invoking their handlers.
+  if (peer !== undefined) {
+    if (peer?.principal?.kind === 'owner' && peer.signal?.aborted === false) return undefined
+    return 403
+  }
   let decision
   try {
     // Hosts before dsh 0.1.7 publish the same decision under the older name

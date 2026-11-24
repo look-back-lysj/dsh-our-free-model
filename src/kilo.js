@@ -25,8 +25,20 @@ import { egressFetch } from './egress.js'
 const LISTING_TIMEOUT_MS = 15000
 const TURN_TIMEOUT_MS = 300000
 
-/** Overridable for the offline suite and the live probes, like the free lane's base. */
-export const KILO_BASE = (process.env.OUR_FREE_MODEL_KILO_BASE ?? 'https://api.kilo.ai/api/gateway').replace(/\/+$/, '')
+/**
+ * The gateway base, newest first (`ai-gateway.kilo.ai` is what the official
+ * docs publish; the older `api.kilo.ai/api/gateway` path answers the same
+ * catalog and stays as the override/fallback). Overridable for the offline
+ * suite and the live probes, like the free lane's base.
+ */
+export const KILO_BASE = (process.env.OUR_FREE_MODEL_KILO_BASE ?? 'https://ai-gateway.kilo.ai/api/v1').replace(/\/+$/, '')
+
+/** The attribution headers Kilo's own clients send; documented optional, and a
+ *  gateway that ranks by referrer sees the plugin, not a spoofed editor. */
+const KILO_ATTRIBUTION = {
+  'http-referer': 'https://kilo.ai/',
+  'x-title': 'Our Free Model',
+}
 
 /**
  * The lane's transport is `egressFetch`, exactly like the free lane's: an
@@ -37,7 +49,13 @@ function kiloFetch(url, init) {
   return egressFetch(url, init)
 }
 
-/** One listing round: `GET {base}/models`. Returns the parsed JSON document. */
+/** The cached listing document and its validator, for conditional rounds. */
+let listingCache = null
+let listingETag = null
+
+/** One listing round: `GET {base}/models`, conditionally when the gateway
+ *  named a validator last time. Returns the parsed JSON document; a `304`
+ *  answers with the cached one. */
 export async function fetchKiloListing({ signal, timeoutMs = LISTING_TIMEOUT_MS } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -46,15 +64,27 @@ export async function fetchKiloListing({ signal, timeoutMs = LISTING_TIMEOUT_MS 
   const onCallerAbort = () => { callerAborted = true; controller.abort() }
   signal?.addEventListener('abort', onCallerAbort, { once: true })
   try {
+    const headers = {
+      accept: 'application/json',
+      'user-agent': 'dsh-our-free-model',
+      ...KILO_ATTRIBUTION,
+      ...(listingETag !== null ? { 'if-none-match': listingETag } : {}),
+    }
     const response = await kiloFetch(`${KILO_BASE}/models`, {
-      headers: { accept: 'application/json', 'user-agent': 'dsh-our-free-model' },
+      headers,
       redirect: 'error',
       signal: controller.signal,
     })
+    if (response.status === 304 && listingCache !== null) return listingCache
     const text = await response.text()
     let payload
     try { payload = JSON.parse(text) } catch { payload = { error: { message: text.slice(0, 300) || `HTTP ${response.status}` } } }
     if (!response.ok) throw classifyFailure(response.status, payload)
+    const etag = response.headers.get('etag')
+    if (typeof etag === 'string' && etag !== '') {
+      listingETag = etag
+      listingCache = payload
+    }
     return payload
   } catch (error) {
     if (error instanceof UpstreamError) throw error
@@ -83,7 +113,7 @@ export async function postKiloStreamed({ body, signal, onData, timeoutMs = TURN_
   try {
     response = await kiloFetch(`${KILO_BASE}/chat/completions`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'text/event-stream', 'user-agent': 'dsh-our-free-model' },
+      headers: { 'content-type': 'application/json', accept: 'text/event-stream', 'user-agent': 'dsh-our-free-model', ...KILO_ATTRIBUTION },
       body: bodyText,
       redirect: 'error',
       signal,
@@ -151,9 +181,29 @@ function classifyKilo(status, text, retryAfterMs) {
   let payload
   try { payload = JSON.parse(text) } catch { payload = { error: { message: text.slice(0, 300) || `HTTP ${status}` } } }
   const type = payload?.error_type ?? payload?.error?.code ?? payload?.error?.type
+  const rawMeta = payload?.error?.metadata?.raw ?? payload?.metadata?.raw
+  let message = payload?.error?.message ?? (typeof payload?.message === 'string' ? payload.message : undefined)
+  if (typeof rawMeta === 'string' && rawMeta.trim() !== '') {
+    let rawDetail = ''
+    try {
+      const parsed = JSON.parse(rawMeta)
+      rawDetail = typeof parsed?.error === 'string' ? parsed.error
+        : typeof parsed?.message === 'string' ? parsed.message
+        : typeof parsed?.error?.message === 'string' ? parsed.error.message
+        : ''
+    } catch {
+      rawDetail = rawMeta.slice(0, 200).trim()
+    }
+    const providerName = payload?.error?.metadata?.provider_name ?? payload?.metadata?.provider_name
+    const providerSuffix = typeof providerName === 'string' && providerName !== '' ? ` (${providerName})` : ''
+    if (rawDetail !== '') {
+      message = message ? `${message}: ${rawDetail}${providerSuffix}` : `${rawDetail}${providerSuffix}`
+    }
+  }
   const shaped = {
     error: {
       ...payload?.error,
+      ...(message !== undefined ? { message } : {}),
       ...(type === undefined ? {} : { type: String(type) }),
     },
   }

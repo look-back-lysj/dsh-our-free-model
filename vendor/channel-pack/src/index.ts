@@ -24,6 +24,7 @@ import { ZCODE_CAPTCHA_FALLBACK } from './zcode-captcha.js'
 import type { CarrierOutcome } from './captcha-carrier.js'
 import type { ZcodeCredential } from './zcode.js'
 import { AccountPool, allAccountsRateLimitedForModel } from './account-pool.js'
+import { nextUtc8DayStartMs } from './model-queue.js'
 import { hasLegacyNamespaceRegistration, settingsOf, suppressAutoSettingsPage } from './settings-compat.js'
 import type { ImageRequestTarget } from './image-budget.js'
 import { buildRaccoonNickname, registerChannelPackRpc } from './channel-pack-rpc.js'
@@ -268,6 +269,12 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
     'llm-minimax', 'llm-zcode', 'llm-gemini',
   )
   const pool = new AccountPool(ctx)
+  const accountForRefresh = async (provider: string, accountId?: string) => {
+    if (accountId === undefined) return pool.getAvailableAccount(provider, '')
+    const entry = pool.listAccountsByProvider(provider).find(account => account.id === accountId)
+    if (entry === undefined) throw new LlmError(`${provider}: 当前请求的账号已移除`, 'MISSING_CREDENTIAL')
+    return { entry }
+  }
 
   // 「已失效模型」剔除：注入 ctx 只为把日志接进 DSH logger 并复用同一份 home
   // 解析。必须在任何 `registerXxxLlm` 之前调用 —— 各适配器经
@@ -313,6 +320,7 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
   const throwIfAllAccountsRateLimited = (
     product: { id: string; displayName: string },
     modelId?: string,
+    shortRateLimitMs?: number,
   ): void => {
     const limited = allAccountsRateLimitedForModel(
       // 只统计**启用**账号：停用账号本就不参与自动选号，把它们算进来会
@@ -321,6 +329,22 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
       modelId ?? '',
     )
     if (limited === undefined) return
+    const now = Date.now()
+    if (shortRateLimitMs !== undefined) {
+      const waitMs = Math.max(1, limited.resetAtMs - now)
+      // 402 写的是 UTC+8 次日零点；429 的冷却最多 15 分钟。两种标记共用
+      // `modelRateLimits`，这里用「是否正好落在下一个日界」区分，避免把
+      // 短时限流误报成当日额度耗尽。
+      const quotaMarker = Math.abs(limited.resetAtMs - nextUtc8DayStartMs(now)) < 1_000
+      if (waitMs <= shortRateLimitMs && !quotaMarker) {
+        throw new LlmError(
+          `${product.displayName}：模型 ${modelId} 的可用账号均在短时限流中，`
+          + `${Math.ceil(waitMs / 1_000)} 秒后可重试（无需重新登录）。`,
+          'RATE_LIMIT',
+          { status: 429, providerRetryAfterMs: waitMs },
+        )
+      }
+    }
     throw new LlmError(
       `${product.displayName}：模型 ${modelId} 的可用账号均在限流中，`
       + `最近一个将于 ${new Date(limited.resetAtMs).toLocaleString('zh-CN')} 解禁。`
@@ -356,7 +380,7 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
         return undefined
       }
     },
-    refresh: async () => {
+    refresh: async (accountId?: string) => {
       // 必须刷新**解析凭据时所用的那一个**账号，而不是默认单凭据 ref。
       //
       // 为什么：resolveCredential（上面）优先从账号池取
@@ -369,7 +393,7 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
       //
       // 与 Go 一致：`handler.go:197-209` 也是先 Pick 出账号、再对该账号
       // `RefreshToken(acct)`（而非某个全局单例）。
-      const available = await pool.getAvailableAccount(LOBSTERAI.id, '')
+      const available = await accountForRefresh(LOBSTERAI.id, accountId)
       if (available) await lobsterai.refreshAccountCredential(available.entry.credentialRef, pool, available.entry.id)
       else await lobsterai.refresh()
     },
@@ -433,7 +457,7 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
         return undefined
       }
     },
-    refresh: async () => {
+    refresh: async (accountId?: string) => {
       // 必须刷新**解析凭据时所用的那一个**账号，而不是默认单凭据 ref。
       //
       // 为什么：resolveCredential（上面）优先从账号池取
@@ -443,7 +467,7 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
       // 那份未更新的过期凭据 → 带着过期 token 发请求 → 401。
       // 用户看到的是「刚在 Channel Pack 登录好，却一直认证失败」，
       // 而日志里续期全是成功的，极难排查。
-      const available = await pool.getAvailableAccount(QODER.id, '')
+      const available = await accountForRefresh(QODER.id, accountId)
       if (available) await qoder.refreshAccountCredential(available.entry.credentialRef, pool, available.entry.id)
       else await qoder.refresh()
     },
@@ -457,6 +481,18 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
     product: QODER,
     // 额度受限时标记「本次实际使用的账号」（理由见 `activeQoderAccountId` 注释）。
     currentAccountId: () => activeQoderAccountId.get(QODER.id),
+    // 以本次实际凭据查账号，避免并发请求间共享的 activeQoderAccountId 串号。
+    queueAccountIdForCredential: async credential => {
+      const id = await pool.findAccountIdByCredential(QODER.id, credential.access_token)
+      return id.length > 0 ? id : undefined
+    },
+    onQueueAccountSwitch: () => {
+      ctx.logger?.info?.(`[channel-pack] ${QODER.displayName} 排队时已尝试切换账号`)
+    },
+    onQueueRotationFailure: reason => {
+      ctx.logger?.warn?.(`[channel-pack] ${QODER.displayName} 排队换号失败，将继续等待并重试`)
+      if (reason !== undefined) ctx.logger?.debug?.(`[channel-pack] ${QODER.id} queue rotation detail: ${String(reason)}`)
+    },
   })
 
   // ===== Qoder 中国版（qodercn）=====
@@ -492,12 +528,12 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
         return undefined
       }
     },
-    refresh: async () => {
+    refresh: async (accountId?: string) => {
       // ⚠️ 必须刷新**解析凭据时所用的那一个**账号，而不是默认单凭据 ref。
       // 理由与国际版那条真实缺陷完全同因：resolveCredential 优先取池内凭据，
       // 而 refresh() 读写 QODERCN_ACCESS_TOKEN，两者错配会让日志里续期全成功、
       // 用户却「刚登录却一直认证失败」。
-      const available = await pool.getAvailableAccount(QODER_CN.id, '')
+      const available = await accountForRefresh(QODER_CN.id, accountId)
       if (available) await qoderCn.refreshAccountCredential(available.entry.credentialRef, pool, available.entry.id)
       else await qoderCn.refresh()
     },
@@ -511,6 +547,17 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
     // ⚠️ 取「**本次实际使用**的账号」而非池里默认那一个：池的默认账号可能与之
     // 不同（例如本账号被限流、池已切到别的账号），标错就会让标记落在无辜账号上。
     currentAccountId: () => activeQoderAccountId.get(QODER_CN.id),
+    queueAccountIdForCredential: async credential => {
+      const id = await pool.findAccountIdByCredential(QODER_CN.id, credential.access_token)
+      return id.length > 0 ? id : undefined
+    },
+    onQueueAccountSwitch: () => {
+      ctx.logger?.info?.(`[channel-pack] ${QODER_CN.displayName} 排队时已尝试切换账号`)
+    },
+    onQueueRotationFailure: reason => {
+      ctx.logger?.warn?.(`[channel-pack] ${QODER_CN.displayName} 排队换号失败，将继续等待并重试`)
+      if (reason !== undefined) ctx.logger?.debug?.(`[channel-pack] ${QODER_CN.id} queue rotation detail: ${String(reason)}`)
+    },
   })
 
   // ===== TRAE（字节 TRAE IDE）服务 =====
@@ -541,8 +588,8 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
         return undefined
       }
     },
-    refresh: async () => {
-      const available = await pool.getAvailableAccount(TRAE.id, '')
+    refresh: async (accountId?: string) => {
+      const available = await accountForRefresh(TRAE.id, accountId)
       if (available) await trae.refreshAccountCredential(available.entry.credentialRef, pool, available.entry.id)
       else await trae.refresh()
     },
@@ -602,7 +649,7 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
         return undefined
       }
     },
-    refresh: async () => {
+    refresh: async (accountId?: string) => {
       // 必须刷新**解析凭据时所用的那一个**账号，而不是默认单凭据 ref。
       //
       // 为什么：resolveCredential（上面）优先从账号池取
@@ -612,7 +659,7 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
       // 那份未更新的过期凭据 → 带着过期 token 发请求 → 401。
       // 用户看到的是「刚在 Channel Pack 登录好，却一直认证失败」，
       // 而日志里续期全是成功的，极难排查。
-      const available = await pool.getAvailableAccount(CLINE.id, '')
+      const available = await accountForRefresh(CLINE.id, accountId)
       if (available) await cline.refreshAccountCredential(available.entry.credentialRef, pool, available.entry.id)
       else await cline.refresh()
     },
@@ -745,12 +792,14 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
         return undefined
       }
     },
-    refresh: async (accountId?: string) => {
+    refresh: async (accountId?: string, _reason?: 'auth', signal?: AbortSignal) => {
       const entry = accountId === undefined ? undefined
         : pool.listAccountsByProvider(LOOMY.id).find(account => account.id === accountId)
       if (accountId !== undefined && entry === undefined) throw new Error('loomy: account no longer exists')
-      if (entry) await loomy.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-      else await loomy.refresh()
+      // “探测暂时不可用”由 adapter 决定是否保留旧凭据：初始取号可以直接
+      // 交给 chat 判定，但 chat 自己回 401 时仍必须保留认证失败语义。
+      if (entry) await loomy.refreshAccountCredential(entry.credentialRef, pool, entry.id, signal)
+      else await loomy.refresh(signal)
       const resolved = await ctx.credentials.resolve(credentialRef(entry?.credentialRef ?? LOOMY.defaultCredentialRef))
       if (!resolved) throw new Error('loomy: credential no longer exists')
       return JSON.parse(resolved.value) as LoomyCredential
@@ -824,7 +873,9 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
         reportLedgerAccount(RACCOON.id, available.entry.id)
         return available.credential as unknown as RaccoonCredential
       }
-      throwIfAllAccountsRateLimited(RACCOON, modelId)
+      // 429 的短冷却与 402 的次日额度共用同一张表；让解析侧保留
+      // RATE_LIMIT 语义，否则选号入口会把「等 60 秒」误报成「今天用完」。
+      throwIfAllAccountsRateLimited(RACCOON, modelId, 15 * 60_000)
       const resolved = await ctx.credentials.resolve(credentialRef(RACCOON.defaultCredentialRef))
       if (!resolved) return undefined
       try {
@@ -900,13 +951,13 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
         return undefined
       }
     },
-    refresh: async () => {
+    refresh: async (accountId?: string) => {
       // ⚠️ MiniMax **有** refresh 端点（`/oauth2/token` 的 refresh_token 授权），
       // 这里是真续期（与 Loomy 的「只能探测有效性」不同）。
       //
       // 仍须刷新**解析凭据时所用的那一个**账号，而不是默认单凭据 ref ——
       // 否则续期的是另一份凭据，用户会看到「刚登录好却一直认证失败」。
-      const available = await pool.getAvailableAccount(MINIMAX.id, '')
+      const available = await accountForRefresh(MINIMAX.id, accountId)
       if (available) {
         // ⚠️ **必须传 pool + entry.id**：续期成功后要把新的 `expiresAt` 写回
         // 账号池，否则 UI 会一直显示「已过期」而实际能正常发消息
@@ -993,10 +1044,10 @@ export function apply(ctx: Context, config: { disableOpencode?: boolean; outlet?
         return undefined
       }
     },
-    refresh: async () => {
+    refresh: async (accountId?: string) => {
       // ⚠️ 必须刷新**解析凭据时所用的那一个**账号，而不是默认单凭据 ref ——
       // 否则续期的是另一份凭据，用户会看到「刚登录好却一直认证失败」。
-      const available = await pool.getAvailableAccount(GEMINI.id, '')
+      const available = await accountForRefresh(GEMINI.id, accountId)
       if (available) {
         // ⚠️ **必须传 pool + entry.id**：续期成功后要把新的 `expiresAt` 写回
         // 账号池，否则 UI 一直显示「已过期」而实际能正常发消息。
@@ -1474,8 +1525,10 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
   if (config.disableOpencode !== true) {
     const opencodeUA = lazyOpencodeUserAgent()
     opencodeAdapter = registerOpencodeLlm(ctx, {
-      identitySlots: async () => listIdentitySlots(
-        await Promise.all(pool.listAccountsByProvider(OPENCODE.id).map(async (entry) => {
+      identitySlots: async (model?: string) => listIdentitySlots(
+        await Promise.all(pool.listAccountsByProvider(OPENCODE.id).filter(entry =>
+          model === undefined || !((entry.modelRateLimits?.[model] ?? 0) > Date.now()),
+        ).map(async (entry) => {
           const resolved = await ctx.credentials
             .resolve(credentialRef(entry.credentialRef))
             .catch(() => undefined)
@@ -1636,6 +1689,8 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
 
   registerChannelPackRpc(ctx, pool, lobsterai, qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, gemini, modelAdapters, {
     ...config,
+    // ⚠️ 配额等附属查询必须复用同一出口；省略会让 gemini-credits 回落到裸 fetch。
+    fetcher: network.fetch,
   })
   // 网关是旁路功能：这里传 `pool` 只为读设置页里的开关，其内部任何失败都已
   // 自行降级为日志，绝不会让插件 apply() 失败。

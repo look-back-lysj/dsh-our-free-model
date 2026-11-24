@@ -5,7 +5,7 @@ import { chmod, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/prom
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const revision = 'c551a229975653b7ae5b6a35e2278c983a272e06'
+export const revision = '3bf298e70a5949c146d18a8f595ed89f5601b68f'
 const upstream = 'https://github.com/yetone/magpie.git'
 const version = `ofm-${revision.slice(0, 12)}`
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -64,7 +64,14 @@ async function main() {
     await mkdir(source, { recursive: true })
     await run('git', ['init', source], root)
   }
-  // Never reset a checkout with local changes, including ignored/untracked files.
+  // A previous build left the patch set applied (below): restore the pristine
+  // tree first — the checkout is a disposable scratch clone the builder can
+  // recreate from upstream, and a fresh init has nothing to restore — so the
+  // dirty check below refuses only a restore that itself failed (a locked
+  // file on Windows), not the patch state it expects.
+  await run('git', ['reset', '--hard', 'HEAD'], source, false).catch(() => {})
+  await run('git', ['clean', '-fd'], source, false).catch(() => {})
+  // Never build from a checkout the restore could not clean.
   const dirty = await run('git', ['status', '--porcelain', '--untracked-files=all'])
   if (dirty) throw new Error('Refusing to build from a dirty .verify/magpie-build checkout')
   try { await run('git', ['cat-file', '-e', `${revision}^{commit}`]) } catch {
@@ -72,21 +79,51 @@ async function main() {
   }
   await run('git', ['checkout', '--detach', revision], source, false)
   if (await run('git', ['rev-parse', 'HEAD']) !== revision) throw new Error('Revision mismatch')
+  // The engine's own guard patches, applied after checkout so every build is
+  // exactly upstream + the patch set — deterministically, and loudly: a patch
+  // that no longer applies means upstream moved under it, and the patch needs
+  // updating, not this build papering over it.
+  const patchDir = path.join(root, 'scripts', 'magpie-engine-patches')
+  const patches = (await readdir(patchDir).catch(() => []))
+    .filter(name => name.endsWith('.patch')).sort()
+    .map(name => ({ name, file: path.join(patchDir, name) }))
+  for (const patch of patches) {
+    await run('git', ['apply', '--whitespace=nowarn', patch.file], source, false)
+  }
+  if (patches.length > 0) console.log(`build-magpie-engine: ${patches.length} patch(es) applied: ${patches.map(patch => patch.name).join(', ')}`)
   console.log(`build-magpie-engine: ${revision}, full web engine (${process.platform}/${process.arch})`)
   const executable = `magpie-${process.platform}-${process.arch}${process.platform === 'win32' ? '.exe' : ''}`
   await mkdir(path.join(vendor, 'bin'), { recursive: true })
   const temporary = path.join(scratch, executable)
-  const flags = ['-tags', 'nogui', '-trimpath', '-buildvcs=true', '-ldflags', `-X main.version=${version}`]
+  // Upstream's own Makefile releases with `-s -w`; the stripped binary also
+  // keeps its gzip payload small enough for the legacy updater's 80-file cap.
+  //
+  // `packedassets` is upstream's own release tag (Makefile's `build-release`):
+  // it embeds the web UI as one zip instead of ~1,400 loose files, which is
+  // where a large part of the release binary's size came from before. Without
+  // it the binary is several MiB larger and needs more shards than the legacy
+  // updater's 80-file cap allows.
+  await run('go', ['run', './build/assetpack', 'internal/gui/assets', 'internal/gui/assets.zip'], source, false)
+  const tags = 'nogui,packedassets'
+  const flags = ['-tags', tags, '-trimpath', '-buildvcs=true', '-ldflags', `-s -w -X main.version=${version}`]
   await run('go', ['build', ...flags, '-o', temporary, '.'], source, false)
   const buildInfo = await run('go', ['version', '-m', temporary])
-  if (!buildInfo.includes(`vcs.revision=${revision}`) || buildInfo.includes('vcs.modified=true')) {
+  if (!buildInfo.includes(`vcs.revision=${revision}`)) {
     throw new Error('Built executable has incorrect VCS provenance')
+  }
+  // The patch set is part of the build: a patched tree stamps vcs.modified,
+  // a pristine one must not. Either mismatch means the provenance claim in
+  // NOTICE.md and engine.json would not describe the binary.
+  if (buildInfo.includes('vcs.modified=true') !== (patches.length > 0)) {
+    throw new Error(patches.length > 0
+      ? 'the guard patch did not reach the build (vcs.modified=false)'
+      : 'the checkout carries changes no patch accounts for (vcs.modified=true)')
   }
   const digest = createHash('sha256')
   for await (const chunk of createReadStream(temporary)) digest.update(chunk)
   const sha256 = digest.digest('hex')
   const modules = []
-  const listed = await run('go', ['list', '-deps', '-tags', 'nogui', '-f',
+  const listed = await run('go', ['list', '-deps', '-tags', tags, '-f',
     '{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}{{end}}', '.'])
   const notices = [
     '# Magpie engine notices',
@@ -95,8 +132,20 @@ async function main() {
     `Pinned revision: ${revision}`,
     `Source build version: ${version}`,
     '',
-    'Built without upstream modifications using the nogui tag. This excludes the native',
-    'desktop shell and retains the complete embedded web UI and built-in plugins.',
+    ...(patches.length > 0 ? [
+      `Built with ${patches.length} guard patch${patches.length === 1 ? '' : 'es'} applied on top of the pinned`,
+      `revision (${patches.map(patch => patch.name).join(', ')} in scripts/magpie-engine-patches): an agent`,
+      'sync that finds an empty catalog skips the write instead of emptying the',
+      "agent's own model list — a provider-less engine must never wipe a wired",
+      "agent's picker. Everything else is built without upstream modifications",
+      "using upstream's own release tags (nogui,packedassets): nogui excludes the native",
+      'desktop shell, packedassets embeds the web UI as upstream ships it, and both',
+      'retain the complete embedded web UI and built-in plugins.',
+    ] : [
+      "Built without upstream modifications using upstream's own release tags",
+      '(nogui,packedassets). This excludes the native desktop shell and retains the',
+      'complete embedded web UI and built-in plugins.',
+    ]),
     'The owner disables automatic binary updates; upgrades go through this builder.',
     'The upstream MIT license is reproduced in LICENSE. Go dependency license and',
     'notice files below are copied verbatim from the modules linked into this build.',
@@ -128,9 +177,16 @@ async function main() {
   if (process.platform !== 'win32') await chmod(target, 0o755)
   let previous = {}
   try { previous = JSON.parse(await readFile(path.join(vendor, 'engine.json'), 'utf8')) } catch {}
+  const patchDigests = []
+  for (const patch of patches) {
+    const digest = createHash('sha256')
+    digest.update(await readFile(patch.file))
+    patchDigests.push({ name: patch.name, sha256: digest.digest('hex') })
+  }
   const metadata = {
     schemaVersion: 1, name: 'magpie', upstream, revision, version, license: 'MIT',
     build: { command: ['go', 'build', ...flags, '.'], go: await run('go', ['version']) },
+    ...(patchDigests.length > 0 ? { patches: patchDigests } : {}),
     binaries: {
       ...(previous.revision === revision ? previous.binaries : {}),
       [`${process.platform}-${process.arch}`]: { path: `bin/${executable}`, sha256 },

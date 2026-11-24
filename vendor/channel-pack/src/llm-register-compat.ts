@@ -66,7 +66,22 @@
  */
 
 import { withDeadModelPruning } from './dead-model-store.js'
-import { FALLBACK_IMAGE_PRICING } from '../../../src/image-pricing.js'
+
+/**
+ * 缺少厂商视觉计价协议时的同步估算。
+ *
+ * 与宿主 `src/adapter.js` 的同名常量保持一致；渠道包不能从那里 import ——
+ * 那会把 adapter、aggregate、providers 和整个宿主依赖图一起打进 `pack.js`，
+ * 而这里只需要一个十行的兜底对象。
+ */
+const FALLBACK_IMAGE_PRICING = Object.freeze({
+  /** @param {readonly { offloaded?: boolean }[]} images */
+  priceImages(images: readonly { offloaded?: boolean }[]) {
+    return images.map(image => image.offloaded === true
+      ? { visualTokens: 0, text: '[image omitted]' }
+      : { visualTokens: 1024, text: '[image]' })
+  },
+})
 
 /** dsh-llm 对「configurable provider 已存在」抛的 code。**当前仅作防御**保留。 */
 const DUPLICATE_DIRECTORY = 'DUPLICATE_DIRECTORY'

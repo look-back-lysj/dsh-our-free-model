@@ -814,7 +814,7 @@ const { createGatewayServer, resetAnalytics, poolProbe } = await import('../work
   check('display names never leak the org prefix', roster.every(entry => !entry.name.includes('deepseek-ai/') && !entry.name.includes('moonshotai/')), true)
 }
 
-// ── effort menus and their wire patches (ZCode declaration shape) ───────────
+// ── effort menus and their wire patches (NVIDIA Build declaration shape) ────
 {
   const { effortsFor, effortPatchFor, budgetFor } = await import('../src/effort.js')
   const roster = buildEacCatalog([
@@ -822,10 +822,13 @@ const { createGatewayServer, resetAnalytics, poolProbe } = await import('../work
     'openai/gpt-oss-20b', 'z-ai/glm-5.3', 'z-ai/glm-5.3-flash',
   ])
   const byId = id => roster.find(entry => entry.id === id)
-  check('the deepseek menu carries the off switch ZCode declares', effortsFor(byId('deepseek-ai/deepseek-v4.1-flash'))?.map(m => m.id), ['disabled', 'low', 'high', 'max'])
-  check('the off level maps to reasoning.enabled=false', effortPatchFor('disabled', byId('deepseek-ai/deepseek-v4.1-flash')), { reasoning: { enabled: false } })
+  // The menus come from each model's own NVIDIA Build page (2026-10-31), whose
+  // chat schema validates `reasoning_effort` against
+  // none|minimal|low|medium|high|xhigh|max — see EAC_CAPABILITIES.
+  check('the deepseek menu carries the full ladder NVIDIA Build validates', effortsFor(byId('deepseek-ai/deepseek-v4.1-flash'))?.map(m => m.id), ['disabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+  check('the off level maps to the schema\u2019s none rung', effortPatchFor('disabled', byId('deepseek-ai/deepseek-v4.1-flash')), { reasoning_effort: 'none' })
   check("a thinking level maps to the model own effort field", effortPatchFor('max', byId('deepseek-ai/deepseek-v4.1-flash')), { reasoning_effort: 'max' })
-  check('glm maps to thinking+output_config like ZCode declares', effortPatchFor('low', byId('z-ai/glm-5.3-flash')), { thinking: { type: 'enabled' }, output_config: { effort: 'low' } })
+  check('glm maps to the shared effort field like NVIDIA Build declares', effortPatchFor('low', byId('z-ai/glm-5.3-flash')), { reasoning_effort: 'low' })
   check('kimi-k3 has no off level, so the menu starts at low', effortsFor(byId('moonshotai/kimi-k3'))?.map(m => m.id), ['low', 'high', 'max'])
   check('a level the model does not declare falls back to its default', effortPatchFor('max', byId('openai/gpt-oss-20b')), { reasoning_effort: 'medium' })
   const { defaultEffortFor } = await import('../src/effort.js')

@@ -26,10 +26,10 @@ const check = async (name, body) => {
   catch (error) { failures++; console.error(`FAIL ${name}: ${error.stack}`) }
 }
 const json = (res, body, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) }
-const frames = (text, tool = false) => {
+const frames = (text, tool = false, toolName = 'lookup') => {
   const parts = [{ choices: [{ delta: { content: text } }] }]
   if (tool) {
-    parts.push({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_fixture', type: 'function', function: { name: 'lookup', arguments: '{"q":' } }] } }] })
+    parts.push({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_fixture', type: 'function', function: { name: toolName, arguments: '{"q":' } }] } }] })
     parts.push({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"fixture"}' } }] } }] })
   }
   parts.push({ choices: [{ delta: {}, finish_reason: tool ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } })
@@ -106,7 +106,8 @@ const upstream = http.createServer(async (req, res) => {
       return
     }
     res.writeHead(200, { 'content-type': 'text/event-stream' })
-    res.end(frames(signed ? 'eac-ok' : 'account-ok', Array.isArray(body.tools) && body.tools.length > 0))
+    const firstTool = body.tools?.find(t => t?.function?.name === 'multi_agent_v1__spawn_agent')?.function?.name ?? 'lookup'
+    res.end(frames(signed ? 'eac-ok' : 'account-ok', Array.isArray(body.tools) && body.tools.length > 0, firstTool))
   } else json(res, { data: { Response: { Data: { Accounts: [] } } } })
 })
 await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve))
@@ -166,6 +167,33 @@ const rpc = async (method, payload = {}) => {
   return value.value
 }
 try {
+  await check('独立版错误保留 status 与 Retry-After 结构', async () => {
+    const { LlmError } = await import('../packages/standalone/channels/contracts.mjs')
+    const error = new LlmError('fixture', 'RATE_LIMIT', { status: 429, providerRetryAfterMs: 2_000 })
+    assert.equal(error.failure?.status, 429)
+    assert.equal(error.failure?.providerRetryAfterMs, 2_000)
+  })
+  await check('独立业务产物的 Chat / Responses 保留工具调用关联与结果', async () => {
+    const { toGenerateOptions, toResponsesGenerateOptions } = await import('../packages/standalone/channels/business.mjs')
+    const signal = new AbortController().signal
+    const chat = await toGenerateOptions({ model: 'fixture/model', messages: [
+      { role: 'assistant', content: null, tool_calls: [{ id: 'call-result', type: 'function', function: { name: 'lookup', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'call-result', content: 'fixture-tool-output' },
+    ] }, signal)
+    const responses = await toResponsesGenerateOptions({ model: 'fixture/model', input: [
+      { type: 'function_call', call_id: 'call-result', name: 'lookup', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call-result', output: 'fixture-tool-output' },
+    ] }, signal)
+    for (const result of [chat, responses]) {
+      assert.equal(result.messages[0].content[0].id, 'call-result')
+      const answer = result.messages[1]
+      assert.equal(answer.role, 'tool')
+      assert.equal(answer.toolCallId, 'call-result')
+      assert.deepEqual(answer.source, { kind: 'tool', callId: 'call-result' })
+      assert.deepEqual(answer.content, [{ type: 'text', text: 'fixture-tool-output' }])
+      assert.notEqual(answer.id, result.messages[0].id)
+    }
+  })
   service = await startStandalone({ dataDir, port: 0, refresh: false, logger: { warn: message => warnings.push(message), info() {} } })
   await service.ready
   key = JSON.parse(fs.readFileSync(service.keyFile)).forwardKey
@@ -246,6 +274,31 @@ try {
     const ledger = await rpc('usage.tokenLedger', {})
     assert.ok(JSON.stringify(ledger).includes('cline-free/mimo-v2.6-flash'))
     assert.ok(JSON.stringify(ledger).includes('fixture-free'))
+  })
+  await check('Responses namespace 工具经独立渠道展开并还原 name 与 namespace', async () => {
+    const res = await fetch(`${service.url}/v1/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'cline/cline-free/mimo-v2.6-flash',
+        input: 'spawn',
+        stream: true,
+        tools: [{
+          type: 'namespace',
+          name: 'multi_agent_v1',
+          tools: [{ type: 'function', name: 'spawn_agent', parameters: { type: 'object', properties: {} } }],
+        }],
+      }),
+      signal: AbortSignal.timeout(15000),
+    })
+    assert.equal(res.status, 200)
+    const frames = (await res.text()).split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)))
+    const added = frames.find(frame => frame.type === 'response.output_item.added' && frame.item?.type === 'function_call')
+    const done = frames.find(frame => frame.type === 'response.output_item.done' && frame.item?.type === 'function_call')
+    assert.equal(added?.item?.name, 'spawn_agent')
+    assert.equal(added?.item?.namespace, 'multi_agent_v1')
+    assert.equal(done?.item?.name, 'spawn_agent')
+    assert.equal(done?.item?.namespace, 'multi_agent_v1')
   })
   await check('Anthropic Messages 经真实渠道适配器保留消息、系统提示、工具与生成参数', async () => {
     const before = requests.length

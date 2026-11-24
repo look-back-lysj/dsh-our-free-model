@@ -1,3 +1,6 @@
+import { throwIfModelQueued } from './model-queue.js'
+import { withQueueAccountRotation } from './queue-rotation.js'
+import { checkQueuedResponse } from './model-queue.js'
 /**
  * LobsterAI（有道龙虾）LLM 适配器。
  *
@@ -304,7 +307,7 @@ export interface LobsteraiAdapterOptions {
   /** 从凭据存储解析凭据。 */
   resolveCredential: (modelId?: string) => Promise<LobsteraiCredential | undefined>
   /** 静默续期凭据。 */
-  refresh: () => Promise<void>
+  refresh: (accountId?: string, reason?: 'auth') => Promise<void>
   /** 动态拉取远端模型列表；失败时回退到 `product.fallbackModels`。 */
   fetchRemoteModels?: () => Promise<LobsteraiRemoteModel[]>
   /** 解析当前客户端版本号（chat 与模型列表都要带）。 */
@@ -605,6 +608,16 @@ function buildLobsteraiFailure(input: LobsteraiFailureInput): LlmError {
       ? `lobsterai: 模型 ${model} 所有账号均不可用`
       : 'lobsterai: 积分不足'
     return new LlmError(`${prefix}（${detail}）`, 'QUOTA_EXCEEDED', { status })
+  }
+
+  // 风控停用不是「等一下就好」：换号不解决、额度次日也不会恢复。
+  // 必须让用户知道该去平台申诉或换平台，否则只会反复重试（issue #850）。
+  if (kind === 'banned') {
+    return new LlmError(
+      `lobsterai: 账号被上游风控停用，需要到平台申诉或更换账号（${detail}）`,
+      'AUTH',
+      { status: status === 0 ? 403 : status },
+    )
   }
 
   if (exhausted) {
@@ -995,7 +1008,7 @@ export class LobsteraiAdapter extends LlmAdapter {
     // 4. 发送请求（401/403 时刷新一次凭据后重试）
     let response = await this.send(credential, body, options)
     if (!response.ok && (response.status === 401 || response.status === 403)) {
-      await this.options.refresh()
+      await this.options.refresh(undefined, 'auth')
       const refreshed = await this.options.resolveCredential(options.model)
       if (refreshed === undefined || refreshed.access_token.length === 0) {
         throw new LlmError('lobsterai: credential expired and refresh failed', 'AUTH', { status: response.status })
@@ -1101,6 +1114,18 @@ export class LobsteraiAdapter extends LlmAdapter {
         })
       }
 
+      // 风控停用**立即止损**，不再换号（issue #850）。
+      //
+      // 上游是按「账号主体」判定的，同一批同源账号往往被连带停用；逐个试完
+      // 只会把剩下能用的号一起打进风控，还让用户等满 3 轮。额度用完可以等
+      // 次日、可以换号，封号不行 —— 这里如实把「需要申诉/换平台」报给用户。
+      if (lastKind === 'banned') {
+        throw buildLobsteraiFailure({
+          kind: lastKind, status: lastStatus, text: lastText,
+          model: options.model, fromStream: lastFromStream, exhausted: true,
+        })
+      }
+
       // 换号次数上限，对齐 Go 的 `MaxRotate`（`handler.go:190` 的
       // `for i := 0; i < h.cfg.MaxRotate; i++`，默认值 3 见
       // `server.NewHandler`）。防雪崩：账号池很大时若逐个试完，
@@ -1151,7 +1176,7 @@ export class LobsteraiAdapter extends LlmAdapter {
         headers,
         body,
         signal: options.signal,
-      })
+      }).then(checkQueuedResponse)
     } catch (error) {
       if (options.signal?.aborted) throw error
       if (isTransportError(error)) {
@@ -1295,6 +1320,7 @@ export class LobsteraiAdapter extends LlmAdapter {
           } catch {
             continue
           }
+          throwIfModelQueued(data)
           if (data.error !== undefined) {
             // ⚠️ 必须抛**可分类的** `LobsteraiStreamError`：额度耗尽正是以
             // 这个形态下发的（HTTP 200 + `{error:{message:'免费额度已用完，请升级套餐'}}`），
@@ -1466,6 +1492,7 @@ export class LobsteraiAdapter extends LlmAdapter {
         }
       }
     } finally {
+      await reader.cancel().catch(() => {})
       reader.releaseLock()
     }
 
@@ -1663,7 +1690,7 @@ function displayNameFor(model: LobsteraiRemoteModel): string {
  */
 export function registerLobsteraiLlm(ctx: Context, options: LobsteraiAdapterOptions): LobsteraiAdapter {
   const product = options.product ?? LOBSTERAI
-  const adapter = new LobsteraiAdapter(options)
+  const adapter = withQueueAccountRotation(product.id, options, scoped => new LobsteraiAdapter(scoped))
   registerAdapterIdempotent(ctx.llm, [product.id], adapter)
   // 返回实例：Channel Pack「显示列表」需要 `listAllModels()`（不受黑名单影响、
   // 带最终展示名/倍率）。`ctx.llm` 不透传自定义方法，须由调用方持有引用。

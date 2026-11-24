@@ -12,6 +12,11 @@ import { skipWithoutEngineBinary } from './lib/engine-binary.mjs'
 
 if (skipWithoutEngineBinary('magpie-plugin')) process.exit(0)
 
+// The pinned revision is whatever vendor/magpie/engine.json records, so an
+// engine upgrade is one rebuild and not an edit here too.
+const pinnedRevision = JSON.parse(fs.readFileSync(
+  new URL('../vendor/magpie/engine.json', import.meta.url), 'utf8')).revision
+
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-magpie-plugin-'))
 const savedEnvironment = new Map()
 for (const [name, value] of Object.entries({
@@ -202,7 +207,7 @@ try {
     await ok(first, 'POST', '/engine/start', {})
     const status = await ok(first, 'GET', '/engine/status')
     assert.equal(status.json.state, 'ready')
-    assert.equal(status.json.revision, 'c551a229975653b7ae5b6a35e2278c983a272e06')
+    assert.equal(status.json.revision, pinnedRevision)
     const gateway = first.engine.gateway()
     assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(new URL(gateway.url).hostname))
     assert.ok(gateway.key)
@@ -222,19 +227,21 @@ try {
     const listing = await ok(first, 'GET', '/engine/ui/api/providers')
     assert.ok(listing.json && typeof listing.json === 'object')
     const presets = listing.json.presets.filter(preset => preset.kind !== 'partner')
-    // 58 pinned built-ins minus Huawei Cloud, which this build does not offer.
-    assert.equal(presets.length, 57, 'every offered built-in preset must reach the plugin management API')
-    assert.equal(new Set(presets.map(preset => preset.id)).size, 57)
-    const regional = presets.filter(preset => preset.regions?.length)
-    assert.equal(regional.length, 13)
-    assert.equal(regional.reduce((total, preset) => total + preset.regions.length, 0), 58)
-    // The excluded channel must be absent from the very list the add sheet reads.
+    // The list is upstream's own, whatever count this revision ships: this
+    // build filters presets out, it never adds or renames them. What it must
+    // guarantee is that the excluded channels are gone and the ids are unique.
+    assert.ok(presets.length > 0, 'the plugin management API must offer the built-in presets')
+    assert.equal(new Set(presets.map(preset => preset.id)).size, presets.length,
+      'preset ids must stay unique after filtering')
     assert.ok(!presets.some(preset => preset.id === 'huaweicloud'), 'Huawei Cloud must not be offered')
+    assert.ok(!presets.some(preset => preset.id === 'workbuddy' || preset.id === 'workbuddy-ai' || preset.id === 'codebuddy'),
+      'the WorkBuddy/CodeBuddy builds must not be offered')
     assert.ok(!JSON.stringify(presets).toLowerCase().includes('huawei'), 'no Huawei Cloud preset may reach the page')
     for (const id of ['moonshot-cn', 'kimi-code', 'stepfun', 'stepfun-cn', 'tencent-cloud',
-      'qwen-cn', 'qwen-token-plan', 'bailian-token-plan', 'bedrock', 'nous', 'commandcode', 'modelscope',
+      'qwen-cn', 'qwen-token-plan', 'bailian-token-plan', 'qwencloud', 'qwencloud-token-plan', 'bedrock', 'nous', 'commandcode', 'modelscope',
       'aihubmix', 'pipellm', '302ai', 'cherryin', 'yylx', 'typesafe', 'vercel-jev', 'cloudflare-jev',
-      'bailian-decision', 'qwen-decision', 'omlx', 'mlx-serve', 'remote-magpie']) {
+      'bailian-decision', 'qwen-decision', 'omlx', 'mlx-serve', 'remote-magpie',
+      'longcat', 'volcengine-decision', 'voyage']) {
       assert.ok(presets.some(preset => preset.id === id), `missing native preset ${id}`)
     }
   })

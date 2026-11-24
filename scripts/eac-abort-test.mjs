@@ -56,3 +56,59 @@ await test('a live signal preserves the existing transport arguments and result'
     lane.fetch = saved
   }
 })
+
+await test('the EAC transport preserves signed bytes through a selected HTTP proxy', async () => {
+  const saved = { fetch: lane.fetch, proxy: lane.proxy }
+  const proxy = http.createServer((req, res) => {
+    assert.equal(req.url, 'http://unreachable.invalid/eac/auth/status')
+    assert.equal(req.headers['x-synthetic-signature'], 'unchanged')
+    const chunks = []
+    req.on('data', chunk => chunks.push(chunk))
+    req.on('end', () => {
+      assert.equal(Buffer.concat(chunks).toString('utf8'), '{"signed":true}')
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{"ok":true}')
+    })
+  })
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve))
+  try {
+    lane.fetch = null
+    lane.proxy = `http://127.0.0.1:${proxy.address().port}`
+    const response = await directFetch('http://unreachable.invalid/eac/auth/status', {
+      method: 'POST', headers: { 'x-synthetic-signature': 'unchanged' }, body: '{"signed":true}',
+    })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { ok: true })
+  } finally {
+    lane.fetch = saved.fetch
+    lane.proxy = saved.proxy
+    await new Promise(resolve => proxy.close(resolve))
+  }
+})
+
+await test('cancelling EAC closes a stalled proxy CONNECT handshake', { timeout: 3000 }, async () => {
+  const savedProxy = lane.proxy
+  const proxy = http.createServer()
+  let tunnel
+  const connected = new Promise(resolve => proxy.once('connect', (req, socket) => {
+    assert.equal(req.url, 'fixture.invalid:443')
+    tunnel = socket
+    const closed = new Promise(done => socket.once('close', done))
+    socket.on('end', () => socket.destroy())
+    resolve({ closed })
+  }))
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve))
+  const controller = new AbortController()
+  try {
+    lane.proxy = `http://127.0.0.1:${proxy.address().port}`
+    const stopped = assert.rejects(directFetch('https://fixture.invalid', { signal: controller.signal }), aborted)
+    const { closed } = await connected
+    controller.abort()
+    await stopped
+    await closed
+  } finally {
+    lane.proxy = savedProxy
+    tunnel?.destroy()
+    await new Promise(resolve => proxy.close(resolve))
+  }
+})

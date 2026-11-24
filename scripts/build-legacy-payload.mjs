@@ -10,7 +10,18 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const checking = process.argv.includes('--check')
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex')
 const require = createRequire(import.meta.url)
-const esbuild = await import(pathToFileURL(require.resolve('esbuild', { paths: [path.join(root, 'packages/standalone'), root] })).href)
+let esbuild
+try {
+  esbuild = await import(pathToFileURL(require.resolve('esbuild', { paths: [path.join(root, 'packages/standalone'), root] })).href)
+} catch (error) {
+  // release-sign 在无依赖的裸检出上跑发布套件（"plain Node scripts"）；打包校验
+  // 在那里没有意义，真正的守卫是装好依赖的 test.yml。写模式没有 esbuild 仍然硬失败。
+  if (checking && error?.code === 'MODULE_NOT_FOUND') {
+    console.log('legacy-payload: skipped — esbuild 不可用（无依赖安装）；守卫在装好依赖的环境里运行')
+    process.exit(0)
+  }
+  throw error
+}
 const result = await esbuild.build({
   stdin: { contents: "export * from './src/token-saver/index.js'; export * from './src/token-saver/prompts.js';", resolveDir: root, sourcefile: 'token-saver-entry.js' },
   bundle: true, write: false, format: 'esm', platform: 'node', target: 'node22', legalComments: 'inline',
@@ -26,6 +37,88 @@ const write = (rel, bytes) => {
   }
 }
 write('src/token-saver.js', result.outputFiles[0].contents)
+
+// ---- 发布 bundle：o2a 与 core 各并为单文件（80 文件预算）----
+// 源目录（src/o2a/、src/core/）保留在仓库里供开发与测试；插件包只随 bundle
+// 走。o2a 的两个官方资产由插件内联进 bundle（assets/ 不随包发布）；core 的
+// 兄弟模块依赖保持外部引用（避免把 adapter/http 一整串拖进来），并把
+// '../x.js' 改写成 './x.js' 以匹配 bundle 在 src/ 下的落点。
+const o2aInlineAssets = {
+  name: 'o2a-inline-assets',
+  setup(build) {
+    build.onLoad({ filter: /o2a[\\/]asset-source\.js$/ }, () => ({
+      loader: 'js',
+      contents: [
+        '/*!',
+        ' * The two assets below are verbatim copies of the OpenCode client\'s system',
+        ' * prompt and tool contracts (sst/opencode, MIT, tag v2.2.3). Their licence',
+        ' * text ships in LICENSE. Do not edit them by hand: the free',
+        ' * tier fingerprints these bytes.',
+        ' */',
+        '// 由 scripts/build-legacy-payload.mjs 生成：发布 bundle 的内联资产；开发形态见 src/o2a/asset-source.js。',
+        `export const OFFICIAL_PROMPT_V2 = ${JSON.stringify(fs.readFileSync(path.join(root, 'src/o2a/assets/ofm-agent-context.txt'), 'utf8'))}`,
+        `export const OFFICIAL_TOOLS_V2 = ${JSON.stringify(fs.readFileSync(path.join(root, 'src/o2a/assets/ofm-tool-contracts.json'), 'utf8'))}`,
+        'export function officialPromptText() { return OFFICIAL_PROMPT_V2 }',
+        'export function officialToolsText() { return OFFICIAL_TOOLS_V2 }',
+      ].join('\n'),
+    }))
+  },
+}
+
+// core 的兄弟目录依赖（http、adapter、store…）不能打进 bundle：既会复制
+// token-saver 的模块级状态，也会让文件膨胀成半个应用。外部化时把相对上级
+// 路径改写为同级（bundle 落点 src/core.js 与旧 src/core/*.js 的 ../ 视角差一层）。
+const keepParentExternals = {
+  name: 'keep-parent-externals',
+  setup(build) {
+    build.onResolve({ filter: /^\.\.[\\/]/ }, args => ({ path: `./${path.basename(args.path)}`, external: true }))
+  },
+}
+
+/** Exported names of one module, parsed from its source (explicit barrel input). */
+function exportedNames(rel) {
+  const source = fs.readFileSync(path.join(root, rel), 'utf8')
+  const names = []
+  for (const m of source.matchAll(/^export\s+(?:async\s+)?(?:const|let|var|function\s*\*?|class)\s+([A-Za-z_$][\w$]*)/gm)) names.push(m[1])
+  for (const m of source.matchAll(/^export\s*\{([^}]+)\}/gm)) {
+    for (const part of m[1].split(',')) {
+      const segment = part.trim()
+      if (segment === '' || segment === 'default') continue
+      const aliased = segment.split(/\s+as\s+/)
+      names.push((aliased[1] ?? aliased[0]).trim())
+    }
+  }
+  if (names.length === 0) throw new Error(`未能解析导出名：${rel}`)
+  return names
+}
+
+async function bundleToFile(name, specs, plugins) {
+  const barrel = specs.map(([module, names]) => `export { ${names.join(', ')} } from '${module}';`).join('\n')
+  const built = await esbuild.build({
+    stdin: { contents: barrel, resolveDir: root, sourcefile: `${name}-entry.js` },
+    bundle: true, write: false, format: 'esm', platform: 'node', target: 'node22', legalComments: 'inline',
+    plugins,
+  })
+  write(`src/${name}.js`, built.outputFiles[0].contents)
+}
+
+const o2aModules = ['version', 'identity', 'tool-renames', 'official-tools', 'official-prompt', 'gateway-body', 'headers', 'toolshape']
+const seenExports = new Map()
+const o2aSpecs = []
+for (const mod of o2aModules) {
+  const rel = `src/o2a/${mod}.js`
+  const names = exportedNames(rel)
+  for (const name of names) {
+    if (seenExports.has(name)) throw new Error(`o2a 导出名冲突：${name} 同时来自 ${seenExports.get(name)} 与 ${rel}`)
+    seenExports.set(name, rel)
+  }
+  o2aSpecs.push([`./src/o2a/${mod}.js`, names])
+}
+await bundleToFile('o2a', o2aSpecs, [o2aInlineAssets])
+
+const coreSpecs = ['completion', 'runtime', 'stats'].map(mod => [`./src/core/${mod}.js`, exportedNames(`src/core/${mod}.js`)])
+await bundleToFile('core', coreSpecs, [keepParentExternals])
+
 const metadata = JSON.parse(fs.readFileSync(path.join(root, 'vendor/magpie/engine.json'), 'utf8'))
 const expectedParts = new Set()
 for (const [target, entry] of Object.entries(metadata.binaries)) {
@@ -49,7 +142,31 @@ for (const [target, entry] of Object.entries(metadata.binaries)) {
       || !zlib.gunzipSync(compressed, { maxOutputLength: binary.length }).equals(binary)) throw new Error(`分片还原结果不一致：${target}`)
     continue
   }
-  const compressed = zlib.gzipSync(binary, { level: 9 })
+  // 旧升级器把清单限制在 80 个文件、每个文件 4 MiB。分片预算按实际发布集
+  // 现算：80 减去清单里的非分片文件数，就是还能放几个分片。引擎变大会把
+  // 这个数字顶小，普通 gzip -9 可能溢出预算；此时改用 zopfli 重新压缩——
+  // 仍是标准的 gzip 流，只是更省的 DEFLATE 编码，任何 gunzip 都能解开（上面
+  // 的校验要求的正是这一点，不是某个特定压缩器）。zopfli 压 70+ MB 需要
+  // 几分钟，只在溢出时发生。
+  const manifestFiles = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).files
+  const countFiles = rel => {
+    const absolute = path.join(root, rel)
+    if (!fs.statSync(absolute).isDirectory()) return 1
+    return fs.readdirSync(absolute).filter(name => !name.startsWith('.') && name !== 'node_modules')
+      .reduce((sum, name) => sum + countFiles(`${rel}/${name}`), 0)
+  }
+  const plainFiles = 1 + manifestFiles.filter(rel => rel !== 'src/engine-parts')
+    .reduce((sum, rel) => sum + countFiles(rel), 0)
+  const partSlots = 80 - plainFiles
+  if (partSlots <= 0) throw new Error(`发布集已有 ${plainFiles} 个非分片文件，旧升级器放不下任何引擎分片`)
+  let compressed = zlib.gzipSync(binary, { level: 9 })
+  const partBudget = partSlots * 4 * 1024 * 1024
+  if (compressed.length > partBudget) {
+    const mod = await import('@gfx/zopfli')
+    const gzipAsync = mod.gzipAsync ?? mod.default?.gzipAsync
+    compressed = await gzipAsync(binary, { numiterations: 15 })
+    if (compressed.length > partBudget) throw new Error(`zopfli 压缩后仍超出 ${partSlots} 个分片的 4 MiB 预算：${compressed.length}`)
+  }
   const parts = []
   for (let offset = 0; offset < compressed.length; offset += 4 * 1024 * 1024) {
     const bytes = compressed.subarray(offset, offset + 4 * 1024 * 1024)
@@ -68,4 +185,4 @@ for (const name of fs.readdirSync(partsDir)) {
   fs.unlinkSync(path.join(partsDir, name))
 }
 write('vendor/magpie/engine.json', JSON.stringify(metadata, null, 2) + '\n')
-console.log(`旧版兼容资源一致：省 Token 单文件，${expectedParts.size} 个引擎分片`)
+console.log(`旧版兼容资源一致：省 Token 单文件，${expectedParts.size} 个引擎分片，o2a/core 发布 bundle`)

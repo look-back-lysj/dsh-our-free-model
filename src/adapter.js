@@ -22,17 +22,57 @@ import { toChatMessages, toClaudeMessages, toResponseInput, toToolDefs, repairTo
 import { CODE, UpstreamError, postStreamed } from './http.js'
 import { postSealedStreamed } from './eac.js'
 import { postKiloStreamed } from './kilo.js'
-import { postAggregateStreamed, isAggregateEntry } from './aggregate.js'
+import { postAggregateStreamed, postCompatibleStreamed, isAggregateEntry } from './aggregate.js'
 import { finishReason, readStream, sanitizeUsage, windowTokens } from './stream.js'
 import { DEFAULT_LEVEL, MIN_BUDGET, budgetFor, defaultEffortFor, effortPatchFor, effortsFor, hasDeclaredEffortMenu, resolveLevel } from './effort.js'
 import { createChannel } from './channel.js'
 import { recoveryPolicy, canRecover, canRecoverSilentStop, recoveryMessages, continuationMessages, checkpointFits, addUsage, createBlockTracker } from './recovery.js'
-import { isEacEntry, isKiloEntry } from './catalog.js'
+import { isEacEntry, isKiloEntry, isExtensionEntry } from './catalog.js'
 import { isComboEntry, comboChain } from './combos.js'
 import { applyTokenSavers, saverConfig } from './token-saver.js'
 import { classifyFailure, describeVerdict, shouldAdvance } from './route/classify.js'
-import { FALLBACK_IMAGE_PRICING } from './image-pricing.js'
 import { isSubscriptionEntry, subscriptionChunks } from './subscription-adapter.js'
+
+/**
+ * How long a combo candidate may stay silent before the chain counts the try as
+ * failed.
+ *
+ * `runCombo` commits to a candidate only once an answer-bearing chunk arrives,
+ * and a candidate whose upstream accepts the request and then sends nothing —
+ * keepalive comments only, no deltas — never settles `iterator.next()`. With no
+ * deadline that single await blocks the whole chain, so the fallback that exists
+ * for exactly this case never reaches its next link. Availability probes do not
+ * cover the shape either: the gateway answers 200, so the probe reads it as up.
+ *
+ * Only the pre-commit window is bounded. Once an answer delta has been handed
+ * over the answer belongs to the caller and the original unbounded await stays,
+ * so a slow-but-alive model is never cut off mid-stream — a reasoning model that
+ * thinks for a minute while streaming its thoughts keeps resetting the clock.
+ */
+const CHAIN_SILENCE_MS = 25_000
+
+/** Distinguishes "the watchdog fired" from a row the iterator really produced. */
+const SILENT_CANDIDATE = Symbol('ofm-silent-candidate')
+
+/**
+ * Await one iterator step, giving up when the candidate stays silent for `ms`.
+ * A timeout is reported as an advanceable end-of-try, so `runCombo` walks on
+ * exactly as it would after a classified failure.
+ */
+async function nextOrSilence(iterator, ms) {
+  let timer
+  try {
+    const silence = new Promise(resolve => { timer = setTimeout(() => resolve(SILENT_CANDIDATE), ms) })
+    const row = await Promise.race([iterator.next(), silence])
+    if (row !== SILENT_CANDIDATE) return row
+    // Best effort: a pending next() cannot be interrupted, but the generator's
+    // own finally blocks abort its transport once it settles.
+    try { iterator.return?.(undefined) } catch {}
+    return { done: true, value: { advance: true, verdict: null } }
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 export const ROUTE_MAIN = 'our-free-model'
 export const ROUTE_REGION = 'our-free-model-region'
@@ -44,6 +84,11 @@ export const ROUTE_LABELS = {
 }
 
 const STYLE_FOR_WIRE = { chat: 'chat', responses: 'flat', messages: 'claude' }
+
+// One process-level flag, not per-turn: the first id-less turn that lands on the
+// reserved "global" session is what the user needs to hear about, not every
+// title generation or summary that follows it.
+let globalSessionWarned = false
 
 export class FreeModelAdapter {
   /**
@@ -252,7 +297,7 @@ export class FreeModelAdapter {
       let result
       const held = []
       while (true) {
-        const row = await iterator.next()
+        const row = committed ? await iterator.next() : await nextOrSilence(iterator, CHAIN_SILENCE_MS)
         if (row.done === true) { result = row.value; break }
         if (committed) { yield row.value; continue }
         held.push(row.value)
@@ -329,6 +374,60 @@ export class FreeModelAdapter {
     const sealed = isEacEntry(entry)
     const kilo = isKiloEntry(entry)
     const aggregate = isAggregateEntry(entry)
+    const extension = isExtensionEntry(entry)
+    // The keyless anonymous lane — the only one the quota breaker and the
+    // passive availability learner describe. Every other lane carries its own
+    // channel tag and its own accounting.
+    const freeLane = !sealed && !kilo && !aggregate && !extension && !isComboEntry(entry) && !isSubscriptionEntry(entry)
+    if (freeLane) {
+      // The quota breaker: a window the upstream opened on this egress is a
+      // wall no model/session/UA choice moves (issue #767 measured exactly
+      // that), so the lane refuses locally instead of feeding the wall another
+      // request. `重试` here means changing the exit or waiting for `retryAt`.
+      //
+      // This refusal reports itself the way every other pre-request refusal in
+      // this function does — a `finish` chunk carrying a classified failure —
+      // and deliberately does NOT throw. A throw here escapes the `try` below
+      // (it starts at the request, hundreds of lines down), so the host received
+      // a bare exception with no `failure.code` and rendered it as UNKNOWN:
+      // measured 2026-11-22, the one error the user could act on was the one
+      // error the page could not classify.
+      //
+      // It must also not re-enter `onFreeLaneOutcome`: that records the verdict
+      // that opened this window, so feeding the local refusal back into it would
+      // push `retryAt` forward on every attempt and the window would never close
+      // while the user kept trying.
+      const gate = this.deps.freeLaneGate?.()
+      if (gate?.ok === false) {
+        const since = Number.isFinite(gate.since) ? new Date(gate.since).toISOString() : ''
+        const until = Number.isFinite(gate.retryAt) ? new Date(gate.retryAt).toISOString() : ''
+        const lifted = gate.state === 'locked'
+          ? 'changing the lane exit lifts it'
+          : `it lifts at ${until}`
+        recordRejectedTurn()
+        yield {
+          type: 'finish',
+          reason: {
+            kind: 'error',
+            failure: {
+              message: `our free model is holding this lane shut locally: a ${gate.state === 'locked' ? 'client-gate refusal' : 'quota 429'}${since ? ` recorded at ${since}` : ''} opened a cooldown on this exit${gate.message ? ` (${gate.message})` : ''} — ${lifted}; use "解除车道锁定" on the settings page to retry now, or switch the lane's exit proxy. Kilo and extension channels are unaffected`,
+              code: CODE.quota,
+              ...(Number.isFinite(gate.retryAt) ? { providerRetryAfterMs: Math.max(1000, gate.retryAt - Date.now()) } : {}),
+              laneQuota: true,
+              laneState: gate.state,
+            },
+          },
+        }
+        // A combo may still have a candidate this gate does not cover (a Kilo or
+        // EAC row carries its own lane), so the refusal stays advanceable. For a
+        // single model `allowAdvance` is absent and nothing moves.
+        return {
+          ok: false,
+          advance: plan.allowAdvance === true && options.signal?.aborted !== true,
+          verdict: null,
+        }
+      }
+    }
     // The absorbed channels speak the Chat wire regardless of what their ids
     // resemble; only the free lane splits endpoints per model, and an aggregate
     // row carries the wire its provider actually serves.
@@ -340,7 +439,20 @@ export class FreeModelAdapter {
     const budget = budgetFor(options.reasoningEffort, entry, options.maxTokens, settings.defaultMaxTokens)
     const declared = toToolDefs(options.tools, style)
     const policy = recoveryPolicy(settings.streamRecovery)
-    const session = sessionForConversation(options.sessionId)
+    const sessionSeed = typeof options.purpose === 'string' && options.purpose.trim() !== ''
+      ? `${options.purpose.trim()}:${options.sessionId ?? 'global'}`
+      : options.sessionId
+    const session = sessionForConversation(sessionSeed)
+    // A turn without a conversation id lands on the reserved "global" session,
+    // shared by every such turn on this machine. Minting a fresh session per
+    // id-less turn is not an option: the free lane accounts quota per session,
+    // so a new id per request would burn the allowance into 429s. The stable
+    // shared session is the price of that quota model — make it visible once
+    // instead of letting concurrent id-less conversations silently share state.
+    if (globalSessionWarned === false && !(typeof options.sessionId === 'string' && options.sessionId.trim() !== '')) {
+      globalSessionWarned = true
+      this.deps.warn?.('our-free-model: a turn arrived without a conversation id; it shares the reserved "global" upstream session with every other id-less turn')
+    }
     const recoveryId = mintRequestId()
     let attemptMessages = messages
     let attemptBudget = budget
@@ -436,13 +548,20 @@ export class FreeModelAdapter {
       const attemptStarted = Date.now()
       const recovering = attempt === 1
       const savingsSink = {}
-      const payload = payloadFor(attemptMessages, attemptBudget, recovering ? [] : warnings, savingsSink)
+      let payload = payloadFor(attemptMessages, attemptBudget, recovering ? [] : warnings, savingsSink)
       attemptSavings = savingsSink.report ?? null
+      // Enhancement extensions see the harness body after every lane's own
+      // shaping but before the free lane's fingerprint — they rewrite the
+      // caller's request, not the camouflage. Fail-open inside the runtime.
+      if (this.deps.extensionRuntime?.applyRequestHooks !== undefined) {
+        payload = await this.deps.extensionRuntime.applyRequestHooks(payload, { model: entry.id, wire, sessionId: session })
+      }
       // The absorbed channels have no tool-name gate; their models see the
       // caller's tools exactly as declared, so the fingerprint pass is free-lane
       // only. The aggregate lane is somebody else's gateway entirely — renaming
       // its tools to this lane's gate placeholders would break the caller's calls.
-      const renameMap = sealed || kilo || aggregate ? new Map() : applyFingerprint(payload, wire === 'messages' ? 'claude' : style === 'flat')
+      // An extension channel shaped its own body in its sandbox.
+      const renameMap = sealed || kilo || aggregate || extension ? new Map() : applyFingerprint(payload, wire === 'messages' ? 'claude' : style === 'flat')
       const controller = new AbortController()
       const onAbort = () => controller.abort(options.signal?.reason)
       options.signal?.addEventListener('abort', onAbort, { once: true })
@@ -465,10 +584,18 @@ export class FreeModelAdapter {
               providerId: entry.providerId,
               modelId: entry.modelId,
               body: payload,
+              session,
               signal: controller.signal,
               onData: value => channel.push(value),
             })
-            : postStreamed({
+            : extension
+              ? this.deps.extensionRuntime.prepareChat(entry, payload, session)
+                .then(prepared => postCompatibleStreamed({
+                  ...prepared,
+                  signal: controller.signal,
+                  onData: value => channel.push(value),
+                }))
+              : postStreamed({
           path: endpointFor(entry.id), body: payload, session,
           attributionUserAgent: snapshot.attributionUserAgent,
           signal: controller.signal,
@@ -487,6 +614,10 @@ export class FreeModelAdapter {
         if (recorded) return
         recorded = true
         const usage = outcome?.sawUsage === true ? outcome.usage : undefined
+        this.deps.extensionRuntime?.noteUsage?.({
+          at: attemptStarted, model: entry.id, extensionId: entry.extensionId, ok,
+          input: usage?.inputTokens ?? 0, output: usage?.outputTokens ?? 0,
+        })
         this.deps.recordUsage({
           at: attemptStarted,
           model: entry.id,
@@ -632,6 +763,7 @@ export class FreeModelAdapter {
           return { ok: false, ...advanceVerdict(CODE.empty, 'empty response') }
         }
         record(true, outcome, recovering ? { recovered: reason.kind === 'stop' } : {})
+        if (freeLane) this.deps.onFreeLaneOutcome?.({ entry, ok: true })
         finishTurn(true, recovering && reason.kind === 'stop', attempt + 1)
         yield { type: 'usage', usage: totalUsage }
         // Keep the provider token when the harness fallback maps an abnormal
@@ -641,6 +773,12 @@ export class FreeModelAdapter {
         return { advance: false, verdict: null, ok: true, recovered: recovering && reason.kind === 'stop' }
       } catch (error) {
         if (error?.code === CODE.region) this.deps.onRegionBlocked?.(entry.id)
+        // Passive availability: a real turn's verdict is the only probe this
+        // lane still spends. A 429 opens the quota breaker; a client-gate 403
+        // locks the lane; a region refusal marks just the model.
+        if (freeLane && options.signal?.aborted !== true && error?.code !== CODE.aborted) {
+          this.deps.onFreeLaneOutcome?.({ entry, ok: false, error })
+        }
         const aborted = options.signal?.aborted === true
         let failure = toFailure(error)
         if (sealed && failure.code === CODE.server) failure = { ...failure, code: 'EAC_UPSTREAM_FAILED' }
@@ -860,6 +998,7 @@ function toFailure(error) {
 function wireOf(entry) {
   if (isSubscriptionEntry(entry)) return entry.wire ?? 'chat'
   if (isAggregateEntry(entry)) return entry.wire ?? 'chat'
+  if (isExtensionEntry(entry)) return entry.wire ?? 'chat'
   if (isEacEntry(entry) || isKiloEntry(entry)) return 'chat'
   return wireFor(entry.id)
 }
@@ -942,3 +1081,16 @@ function describe(entry, settings) {
   }
   return parts.join(' · ')
 }
+
+/**
+ * 缺少厂商视觉计价协议时的同步估算，供宿主的 Token 预算和结果落盘使用。
+ * 1024 是兜底估算值，不代表所有厂商的真实消耗或上限。已移出请求的图片只计描述文本。
+ */
+export const FALLBACK_IMAGE_PRICING = Object.freeze({
+  /** @param {readonly { offloaded?: boolean }[]} images */
+  priceImages(images) {
+    return images.map(image => image.offloaded === true
+      ? { visualTokens: 0, text: '[image omitted]' }
+      : { visualTokens: 1024, text: '[image]' })
+  },
+})
