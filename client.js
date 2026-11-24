@@ -4114,7 +4114,11 @@ window.__ModuleLoader__.load({
       const unlisted = lead(roster.filter(m => m.route !== 'our-free-model' && m.route !== 'our-free-model-region'))
       const toggleModel = onApply === undefined ? undefined : model => {
         const ids = summary.settings.hiddenModelIds ?? []
-        return onApply({ hiddenModelIds: ids.includes(model.id) ? ids.filter(id => id !== model.id) : [...ids, model.id] })
+        if (model.hiddenByUser === true) {
+          const hidden = new Set(Array.isArray(model.hiddenIds) && model.hiddenIds.length > 0 ? model.hiddenIds : [model.id])
+          return onApply({ hiddenModelIds: ids.filter(id => !hidden.has(id)) })
+        }
+        return onApply({ hiddenModelIds: ids.includes(model.id) ? ids : [...ids, model.id] })
       }
       // 只有拿到过明确判定（网关答过 /eac/status）且未授权时才上锁：状态未知
       // 不该显示一把凭空的锁，网关不可达时本地记录仍算已授权。

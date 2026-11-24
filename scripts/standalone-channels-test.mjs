@@ -80,6 +80,12 @@ const upstream = http.createServer(async (req, res) => {
     json(res, {})
   } else if (pathname.endsWith('/points/records')) {
     json(res, { code: '000000', data: { balance: 500, dailyBalance: 0, availableBalance: 500 } })
+  } else if (pathname === '/kilo/models') {
+    json(res, { data: [
+      { id: 'loomy/fixture-free', isFree: true },
+      { id: 'loomy/fixture:free', isFree: true },
+      { id: 'cohere/north-mini-code:free', isFree: true },
+    ] })
   } else if (pathname.endsWith('/models')) {
     if (signed) json(res, { data: [{ id: 'fixture-eac-model' }] })
     else if (req.headers['x-ofm-fixture-host'] === 'api.cline.bot') json(res, { data: [{ id: 'cline-free/mimo-v2.6-flash' }] })
@@ -114,7 +120,7 @@ await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve))
 const fixture = `http://127.0.0.1:${upstream.address().port}`
 process.env.OFM_TEST_UPSTREAM = fixture
 process.env.OUR_FREE_MODEL_BASE = fixture
-process.env.OUR_FREE_MODEL_KILO_BASE = fixture
+process.env.OUR_FREE_MODEL_KILO_BASE = fixture + '/kilo'
 process.env.DSH_HOME = dshHome
 fs.mkdirSync(path.join(dshHome, 'our-free-model'), { recursive: true })
 fs.writeFileSync(path.join(dshHome, 'our-free-model', 'eac-user.json'), JSON.stringify({ token: 'dsh-sentinel', login: 'dsh-user' }))
@@ -215,6 +221,114 @@ try {
     assert.equal(fs.readFileSync(path.join(dshHome, '.credentials.yaml'), 'utf8'), 'SENTINEL_DO_NOT_READ')
     assert.equal(fs.existsSync(path.join(dshHome, 'channel-pack')), false)
     assert.equal((await api('/api/management/eac/status')).value.local, false)
+  })
+  await check('账号渠道与 Kilo 共用完整 ID 时精确匹配，并在账号离场后重算资格', async () => {
+    const shared = 'loomy/fixture-free'
+    const sibling = 'loomy/fixture:free'
+    let loomyAccount
+    const view = async () => {
+      const summary = (await api('/api/management/summary')).value
+      const watched = [shared, sibling]
+      return {
+        summary,
+        rows: summary.catalog.filter(row => watched.includes(row.id)),
+        publicIds: (await api('/v1/models')).value.data.map(row => row.id).filter(id => watched.includes(id)),
+      }
+    }
+    try {
+      await api('/api/management/settings', { hiddenModelIds: [] })
+      await api('/api/management/models/refresh', { probe: false })
+      loomyAccount = (await rpc('account.list', { provider: 'loomy' })).accounts[0]
+      assert.ok(loomyAccount, 'the Loomy account fixture is present')
+
+      const before = await view()
+      assert.deepEqual(before.rows.filter(row => row.id === shared).map(row => row.channel).sort(), ['kilo', 'loomy'])
+      assert.equal(before.rows.find(row => row.id === sibling)?.channel, 'kilo')
+      assert.ok(before.rows.every(row => row.hiddenByUser === false && row.hiddenIds.join() === ''))
+      assert.equal(before.publicIds.filter(id => id === shared).length, 2)
+      assert.ok(before.publicIds.includes(sibling))
+
+      assert.equal((await api('/api/management/settings', { hiddenModelIds: [sibling] })).response.status, 200)
+      const hideSibling = await view()
+      assert.equal(hideSibling.rows.find(row => row.id === sibling)?.hiddenByUser, true)
+      assert.deepEqual(hideSibling.rows.find(row => row.id === sibling)?.hiddenIds, [sibling])
+      for (const row of hideSibling.rows.filter(row => row.id === shared)) {
+        assert.equal(row.hiddenByUser, false, 'saving the distinct Kilo alias must not hide either shared row')
+        assert.deepEqual(row.hiddenIds, [])
+      }
+      assert.equal(hideSibling.publicIds.filter(id => id === shared).length, 2)
+      assert.equal(hideSibling.publicIds.includes(sibling), false)
+
+      assert.equal((await api('/api/management/settings', { hiddenModelIds: [shared] })).response.status, 200)
+      const hideShared = await view()
+      for (const row of hideShared.rows.filter(row => row.id === shared)) {
+        assert.equal(row.hiddenByUser, true)
+        assert.deepEqual(row.hiddenIds, [shared])
+      }
+      assert.equal(hideShared.rows.find(row => row.id === sibling)?.hiddenByUser, false)
+      assert.deepEqual(hideShared.rows.find(row => row.id === sibling)?.hiddenIds, [])
+      assert.equal(hideShared.publicIds.includes(shared), false)
+      assert.deepEqual(hideShared.publicIds, [sibling])
+
+      await rpc('provider.setEnabled', { provider: 'loomy', enabled: false })
+      await api('/api/management/models/refresh', { probe: false })
+      const accountGone = await view()
+      assert.equal(accountGone.rows.some(row => row.channel === 'loomy'), false)
+      assert.deepEqual(accountGone.rows.map(row => [row.id, row.hiddenByUser, row.hiddenIds]), [
+        [shared, true, [shared]], [sibling, true, [shared]],
+      ])
+      assert.deepEqual(accountGone.publicIds, [], 'without the account duplicate the shared id regains family matching')
+
+      await rpc('provider.setEnabled', { provider: 'loomy', enabled: true })
+      await api('/api/management/models/refresh', { probe: false })
+      const accountBack = await view()
+      assert.equal(accountBack.rows.filter(row => row.id === shared).length, 2)
+      assert.ok(accountBack.rows.filter(row => row.id === shared).every(row => row.hiddenByUser && row.hiddenIds.join() === shared))
+      assert.deepEqual([
+        accountBack.rows.find(row => row.id === sibling)?.hiddenByUser,
+        accountBack.rows.find(row => row.id === sibling)?.hiddenIds,
+      ], [false, []])
+      assert.deepEqual(accountBack.publicIds, [sibling])
+
+      await api('/api/management/settings', { hiddenModelIds: [], hideFreeModels: true, hideEacModels: false })
+      const groupOnly = await view()
+      const sharedRows = groupOnly.rows.filter(row => row.id === shared)
+      const accountRow = sharedRows.find(row => row.channel === 'loomy')
+      const kiloRow = sharedRows.find(row => row.channel === 'kilo')
+      assert.deepEqual([kiloRow.hiddenByGroup, kiloRow.hiddenByUser, kiloRow.hiddenIds, kiloRow.routable],
+        [true, true, [], false])
+      assert.deepEqual([accountRow.hiddenByGroup, accountRow.hiddenByUser, accountRow.hiddenIds, accountRow.routable],
+        [false, false, [], true])
+      assert.deepEqual(groupOnly.publicIds, [shared], 'a public account row must not re-advertise its group-hidden Kilo duplicate')
+    } finally {
+      await api('/api/management/settings', { hiddenModelIds: [], hideFreeModels: false, hideEacModels: false })
+      if (loomyAccount) await rpc('provider.setEnabled', { provider: 'loomy', enabled: true })
+      await api('/api/management/models/refresh', { probe: false })
+    }
+  })
+  await check('独立版重算只屏蔽账号行占用的 ID，保留核心去重前 Cohere 冲突', async () => {
+    const shared = 'cohere/north-mini-code:free'
+    const login = await fetch(service.url + '/api/management/session', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: JSON.parse(fs.readFileSync(service.keyFile, 'utf8')).managementKey }),
+    })
+    assert.equal(login.status, 200)
+    const cookie = login.headers.get('set-cookie').split(';')[0]
+    const management = (suffix, body) => api('/api/management' + suffix, body, { cookie })
+    try {
+      assert.equal((await management('/providers/save', {
+        providerId: 'cohere', enabled: true, apiKey: 'local-fixture-only',
+        baseUrl: fixture + '/provider/v1', models: ['north-mini-code:free'],
+      })).response.status, 200)
+      await api('/api/management/models/refresh', { probe: false })
+      const state = service.runtime.state()
+      assert.equal(state.visibility.familyKeysById.has(shared), false,
+        'the service must preserve the core pre-dedupe aggregate/Kilo collision')
+      assert.deepEqual(state.catalog.filter(row => row.id === shared).map(row => row.channel), ['kilo'])
+    } finally {
+      await management('/providers/remove', { providerId: 'cohere' })
+      await api('/api/management/models/refresh', { probe: false })
+    }
   })
   await check('未知渠道保留历史账号与凭据，但不注册、不列模型、不允许旧 RPC 或网关请求', async () => {
     assertUnsupportedDataPreserved()

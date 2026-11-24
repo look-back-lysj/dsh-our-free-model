@@ -1727,12 +1727,17 @@ export function parseTraeSSELine(eventName: string, dataLine: string): TraeSSEEv
   const event = eventName.trim()
   if (dataLine.length === 0) return { event }
 
-  let raw: Record<string, unknown>
+  let raw: Record<string, unknown> | null
   try {
-    raw = JSON.parse(dataLine) as Record<string, unknown>
+    raw = JSON.parse(dataLine) as Record<string, unknown> | null
   } catch {
     return { event }
   }
+
+  // `JSON.parse("null")` succeeds but returns null. The field reads below
+  // (`response` / `finish_reason` / `code` / `message`) would throw on it;
+  // treat it like an unparseable payload and expose only the event name.
+  if (raw === null) return { event }
 
   throwIfModelQueued(raw)
   const ev: TraeSSEEvent = { event }
@@ -1764,10 +1769,15 @@ export function parseTraeSSELine(eventName: string, dataLine: string): TraeSSEEv
  * 归一化 SOLO tool_calls 的字段（function_call → function，清理 SOLO 专属字段）。
  *
  * 对齐 Go 端 `mergeToolCallDelta` 的 field normalization 逻辑（`solosse.go:277-279`）。
+ *
+ * 上游偶发在 tool_calls 数组里塞 null / 原始值；调用方会在这里之后读取
+ * `call.index`，必须先把这些项丢掉，否则整个流会在已发出正文后抛 TypeError。
+ * 同帧的有效工具保持不变。
  */
 function normalizeTraeToolCalls(calls: unknown[]): unknown[] {
-  return calls.map((call) => {
-    if (typeof call !== 'object' || call === null) return call
+  const normalized: unknown[] = []
+  for (const call of calls) {
+    if (typeof call !== 'object' || call === null) continue
     const c = { ...(call as Record<string, unknown>) }
     // function_call → function
     if (typeof c.function_call === 'object' && c.function_call !== null) {
@@ -1780,8 +1790,9 @@ function normalizeTraeToolCalls(calls: unknown[]): unknown[] {
       delete fn.namespace
       delete fn.partial_arguments
     }
-    return c
-  })
+    normalized.push(c)
+  }
+  return normalized
 }
 
 /**

@@ -1,10 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { FreeModelAdapter, ROUTE_MAIN, ROUTE_REGION } from '../adapter.js'
-import { buildCatalog, buildEacCatalog, buildKiloCatalog, isEacEntry, isKiloEntry, parseListing, reviveKiloCatalog } from '../catalog.js'
+import { buildCatalog, buildEacCatalog, buildKiloCatalog, catalogFamilyKeys, isEacEntry, isKiloEntry, parseListing, reviveKiloCatalog } from '../catalog.js'
 import { buildAggregateCatalog, isAggregateEntry } from '../aggregate.js'
 import { buildComboCatalog, isComboEntry, normalizeCombos, pruneRotation } from '../combos.js'
-import { JsonStore, SETTINGS_INITIAL, STATS_INITIAL, STATS_VERSION, migrateStats, pruneDays, recordTurn, recordUsage, isModelHidden } from '../store.js'
+import { JsonStore, SETTINGS_INITIAL, STATS_INITIAL, STATS_VERSION, buildModelVisibility, migrateStats, pruneDays, recordTurn, recordUsage, isModelHidden } from '../store.js'
 import { STATE, detectEgress, probeCatalog } from '../probe.js'
 import { CODE, UpstreamError, getJson } from '../http.js'
 import { runModelTest, modelAvailability } from '../model-test.js'
@@ -118,6 +118,8 @@ export function createModelRuntime({
   let comboCatalog = []
   /** The extension lane: rows served by installed, enabled channel extensions. */
   let extensionCatalog = []
+  /** The directory-confirmed full ids that may share a hidden-model family. */
+  let familyKeysById = new Map()
   /** The free lane's own roster: the base every other lane is merged onto. */
   let freeCatalog = catalog
   let egress = availability.get().egress ?? null
@@ -145,9 +147,11 @@ export function createModelRuntime({
     const laneStandsDown = entry => replacedLane === 'kilo' && isKiloEntry(entry)
     const seen = new Set()
     const merged = []
+    const candidates = []
     for (const entry of [...freeCatalog, ...sealedCatalog, ...kiloCatalog, ...aggregateCatalog, ...extensionCatalog, ...subscriptionEntries]) {
-      if (entry === null || entry === undefined || seen.has(entry.id)) continue
-      if (laneStandsDown(entry)) continue
+      if (entry === null || entry === undefined || laneStandsDown(entry)) continue
+      candidates.push(entry)
+      if (seen.has(entry.id)) continue
       seen.add(entry.id)
       merged.push(entry)
     }
@@ -155,10 +159,12 @@ export function createModelRuntime({
     comboCatalog = buildComboCatalog(combos, merged)
     pruneRotation(combos)
     for (const entry of comboCatalog) {
+      candidates.push(entry)
       if (seen.has(entry.id)) continue
       seen.add(entry.id)
       merged.push(entry)
     }
+    familyKeysById = catalogFamilyKeys(candidates)
     catalog = merged
   }
   const mergeCatalogs = () => {
@@ -168,17 +174,22 @@ export function createModelRuntime({
     rebuildCatalog()
   }
   mergeCatalogs()
-  const state = () => ({
-    catalog,
-    membership: computeMembership(catalog, availability.get(), settings.get()),
-    settings: settings.get(),
-    attributionUserAgent,
-    lane: laneRow(),
-    routing: {
-      quota: subscriptionRuntime?.routingQuota?.() ?? {},
-      usage: Object.fromEntries(catalog.map(row => [row.id, stats.get().models?.[row.id]?.calls ?? 0])),
-    },
-  })
+  const state = () => {
+    const settingsSnapshot = settings.get()
+    const visibility = buildModelVisibility(settingsSnapshot, familyKeysById)
+    return {
+      catalog,
+      membership: computeMembership(catalog, availability.get(), settingsSnapshot, visibility),
+      settings: settingsSnapshot,
+      visibility,
+      attributionUserAgent,
+      lane: laneRow(),
+      routing: {
+        quota: subscriptionRuntime?.routingQuota?.() ?? {},
+        usage: Object.fromEntries(catalog.map(row => [row.id, stats.get().models?.[row.id]?.calls ?? 0])),
+      },
+    }
+  }
   const emitTopology = () => { if (!disposed) onTopology() }
 
   // ── the free lane's quota breaker and passive availability (#708/#767) ──────
@@ -570,9 +581,11 @@ export function createModelRuntime({
       state: () => {
         const snapshot = state()
         // Hiding advertisements must not invalidate requests using a saved id.
-        return { ...snapshot, membership: computeMembership(snapshot.catalog, availability.get(), {
+        const forwardSettings = {
           ...snapshot.settings, hiddenModelIds: [], hideFreeModels: false, hideEacModels: false,
-        }) }
+        }
+        return { ...snapshot, membership: computeMembership(snapshot.catalog, availability.get(), forwardSettings,
+          buildModelVisibility(forwardSettings, snapshot.visibility.familyKeysById)) }
       },
     }),
     publicModelRows: () => publicModelRows(state()),
@@ -607,7 +620,8 @@ function materializeCatalog(ids) {
   return rebuilt.length > 0 ? rebuilt : FALLBACK_CATALOG
 }
 
-export function computeMembership(catalog, availabilitySnapshot, settings) {
+export function computeMembership(catalog, availabilitySnapshot, settings, visibility) {
+  const visibilityIndex = visibility ?? buildModelVisibility(settings, catalogFamilyKeys(catalog))
   const expose = settings?.exposeRegionModels !== false
   const verdictOf = entry => modelAvailability(entry.id, availabilitySnapshot, Boolean(entry.channel)).availability
   const probeable = catalog.filter(entry => !entry.channel)
@@ -617,7 +631,7 @@ export function computeMembership(catalog, availabilitySnapshot, settings) {
   const main = []
   const region = []
   for (const entry of usable) {
-    if (isModelHidden(entry, settings)) continue
+    if (isModelHidden(entry, settings, visibilityIndex)) continue
     const verdict = verdictOf(entry)
     if (verdict !== STATE.regionBlocked) main.push(entry.id)
     else if (expose) region.push(entry.id)
