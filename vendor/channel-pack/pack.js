@@ -38766,6 +38766,7 @@ function parseTraeSSELine(eventName, dataLine) {
   } catch {
     return { event };
   }
+  if (raw === null) return { event };
   throwIfModelQueued(raw);
   const ev = { event };
   switch (event) {
@@ -38792,8 +38793,9 @@ function parseTraeSSELine(eventName, dataLine) {
   return ev;
 }
 function normalizeTraeToolCalls(calls) {
-  return calls.map((call) => {
-    if (typeof call !== "object" || call === null) return call;
+  const normalized = [];
+  for (const call of calls) {
+    if (typeof call !== "object" || call === null) continue;
     const c = { ...call };
     if (typeof c.function_call === "object" && c.function_call !== null) {
       c.function = { ...c.function_call };
@@ -38804,8 +38806,9 @@ function normalizeTraeToolCalls(calls) {
       delete fn.namespace;
       delete fn.partial_arguments;
     }
-    return c;
-  });
+    normalized.push(c);
+  }
+  return normalized;
 }
 
 // vendor/channel-pack/src/trae-errors.ts
@@ -39080,6 +39083,16 @@ function traeCacheReadTokens(usage) {
   const openai = usage.prompt_cache_hit_tokens;
   if (typeof openai === "number" && openai > 0) return openai;
   return 0;
+}
+function isCompleteJsonObject(raw) {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return false;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
 }
 function traeDisplayName(model) {
   const rate = model.creditsRate;
@@ -39589,6 +39602,7 @@ var TraeAdapter = class extends LlmAdapter3 {
     const toolIds = /* @__PURE__ */ new Map();
     let buffer = "";
     let streamEnded = false;
+    let eofReached = false;
     let finishReason2;
     let currentEvent = "";
     let currentData = "";
@@ -39614,17 +39628,29 @@ var TraeAdapter = class extends LlmAdapter3 {
           }
           throw error;
         }
-        if (result.done) break;
-        buffer += decoder.decode(result.value, { stream: true });
+        if (result.done) {
+          buffer += decoder.decode();
+          buffer += "\n\n";
+          eofReached = true;
+        } else {
+          buffer += decoder.decode(result.value, { stream: true });
+        }
         let newline;
         while ((newline = buffer.indexOf("\n")) !== -1) {
           const line2 = buffer.slice(0, newline);
           buffer = buffer.slice(newline + 1);
           if (line2.trim().length === 0) {
             if (currentEvent.length > 0) {
-              const ev = parseTraeSSELine(currentEvent, currentData);
+              const isEofTail = eofReached;
+              const rawEvent = currentEvent;
+              const rawData = currentData;
               currentEvent = "";
               currentData = "";
+              if (isEofTail && rawEvent.trim() === "done" && !isCompleteJsonObject(rawData)) {
+                sawAnyUpstreamEvent = true;
+                continue;
+              }
+              const ev = parseTraeSSELine(rawEvent, rawData);
               if (ev === void 0) continue;
               sawAnyUpstreamEvent = true;
               switch (ev.event) {
@@ -39773,6 +39799,7 @@ var TraeAdapter = class extends LlmAdapter3 {
           });
           break;
         }
+        if (eofReached) break;
       }
     } finally {
       await reader.cancel().catch(() => {
@@ -39844,12 +39871,13 @@ var TraeAdapter = class extends LlmAdapter3 {
     const argsTruncated = [...toolCalls.values()].some((block) => isTruncatedArguments(block.text));
     const droppedUnnamedCalls = [...toolCalls.values()].some((block) => !block.announced);
     const proseCutByStopString = finishReason2 === "stop" && toolOrder.length === 0 && isProseTruncatedByStopString(emittedProse);
+    const truncatedStream = finishReason2 === void 0 && !streamEnded && blockCount > 0;
     const reasoningLoopIsSoleOutput = loopDetected && emittedProse === "" && toolOrder.length === 0;
     const reason = reasoningLoopIsSoleOutput ? { kind: "error", failure: reasoningLoopFailure(
       loopGuard?.diagnostics,
       options.maxTokens,
       "reasoning"
-    ) } : loopDetected ? { kind: "max-tokens" } : finishReason2 === "length" || finishReason2 === void 0 && toolOrder.length > 0 || argsTruncated || proseCutByStopString || droppedUnnamedCalls && toolOrder.length === 0 ? { kind: "max-tokens" } : finishReason2 === "tool_calls" || toolOrder.length > 0 ? { kind: "tool-calls" } : { kind: "stop" };
+    ) } : loopDetected ? { kind: "max-tokens" } : finishReason2 === "length" || finishReason2 === void 0 && toolOrder.length > 0 || argsTruncated || proseCutByStopString || truncatedStream || droppedUnnamedCalls && toolOrder.length === 0 ? { kind: "max-tokens" } : finishReason2 === "tool_calls" || toolOrder.length > 0 ? { kind: "tool-calls" } : { kind: "stop" };
     yield { type: "finish", reason: resolveEmptyResponseReason(reason, blockCount) };
   }
 };
