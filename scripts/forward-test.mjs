@@ -316,6 +316,110 @@ await checkAsync('a block-end after its own deltas never doubles the arguments (
   assert.equal(frames.filter(frame => frame.id !== undefined).length, 1, 'identity rides one frame only')
 })
 
+await checkAsync('held arguments are emitted once when a block-end supplies the name (#829 boundary)', async () => {
+  const lane = makeLane()
+  const base = await serve(lane)
+  // Arguments can arrive before the adapter has restored the call's name. They
+  // are held to keep decoys off the wire, but the block-end must still turn the
+  // completed call into runnable frames once its name confirms the target.
+  lane.script = () => ({
+    chunks: [
+      { type: 'tool-call-delta', index: 0, id: 'call_x', argumentsDelta: '{"path":' },
+      { type: 'tool-call-delta', index: 0, argumentsDelta: '"."}' },
+      { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'call_x', name: 'list_files', arguments: '{"path":"."}' } },
+      { type: 'finish', reason: { kind: 'tool-calls' } },
+    ],
+    outcome: { text: '', toolCalls: [{ slot: 0, id: 'call_x', name: 'list_files', arguments: '{"path":"."}' }] },
+  })
+  const response = await authFetch(base, '/v1/chat/completions', {
+    model: 'mimo-v2.6-flash-free', stream: true,
+    tools: [{ type: 'function', function: { name: 'list_files', parameters: { type: 'object', properties: {} } } }],
+  })
+  assert.equal(response.status, 200)
+  const body = await response.text()
+  const frames = toolCallDeltas(body)
+  assert.ok(frames.length > 0, `held arguments must be emitted after the name arrives, got ${JSON.stringify(body)}`)
+  assert.ok(frames.every(frame => frame.function && typeof frame.function === 'object'),
+    `every tool frame must carry a function delta, got ${JSON.stringify(frames)}`)
+  const opening = frames.find(frame => frame.id !== undefined)
+  assert.equal(opening?.id, 'call_x')
+  assert.equal(opening?.function?.name, 'list_files')
+  assert.equal(frames.filter(frame => frame.id !== undefined).length, 1, 'identity rides one frame only')
+  assert.equal(frames.map(frame => frame.function.arguments ?? '').join(''), '{"path":"."}',
+    'the held fragments must be emitted exactly once')
+  const finish = sseFrames(body).map(frame => frame.choices?.[0]?.finish_reason).filter(Boolean)
+  assert.deepEqual(finish, ['tool_calls'], `got ${finish}`)
+})
+
+await checkAsync('a repeated block-end emits its arguments once (#829 boundary)', async () => {
+  const lane = makeLane()
+  const base = await serve(lane)
+  const block = { type: 'tool-call', id: 'call_be', name: 'list_files', arguments: '{"value":"alpha"}' }
+  lane.script = () => ({
+    chunks: [
+      { type: 'block-end', index: 0, block },
+      { type: 'block-end', index: 0, block },
+      { type: 'finish', reason: { kind: 'tool-calls' } },
+    ],
+    outcome: { text: '', toolCalls: [{ slot: 0, id: 'call_be', name: 'list_files', arguments: block.arguments }] },
+  })
+  const response = await authFetch(base, '/v1/chat/completions', {
+    model: 'mimo-v2.6-flash-free', stream: true,
+    tools: [{ type: 'function', function: { name: 'list_files', parameters: { type: 'object', properties: {} } } }],
+  })
+  const frames = toolCallDeltas(await response.text())
+  assert.equal(frames.map(frame => frame.function?.arguments ?? '').join(''), block.arguments,
+    'a repeated block-end must not append the same argument bytes twice')
+  assert.equal(frames.filter(frame => frame.id !== undefined).length, 1, 'identity rides one frame only')
+})
+
+await checkAsync('held arguments before two block-ends are emitted once (#829 boundary)', async () => {
+  const lane = makeLane()
+  const base = await serve(lane)
+  const block = { type: 'tool-call', id: 'call_x', name: 'list_files', arguments: '{"value":"alpha"}' }
+  lane.script = () => ({
+    chunks: [
+      { type: 'tool-call-delta', index: 0, id: 'call_x', argumentsDelta: '{"value":' },
+      { type: 'tool-call-delta', index: 0, argumentsDelta: '"alpha"}' },
+      { type: 'block-end', index: 0, block },
+      { type: 'block-end', index: 0, block },
+      { type: 'finish', reason: { kind: 'tool-calls' } },
+    ],
+    outcome: { text: '', toolCalls: [{ slot: 0, id: 'call_x', name: 'list_files', arguments: block.arguments }] },
+  })
+  const response = await authFetch(base, '/v1/chat/completions', {
+    model: 'mimo-v2.6-flash-free', stream: true,
+    tools: [{ type: 'function', function: { name: 'list_files', parameters: { type: 'object', properties: {} } } }],
+  })
+  const frames = toolCallDeltas(await response.text())
+  assert.equal(frames.map(frame => frame.function?.arguments ?? '').join(''), block.arguments,
+    'held arguments must not be replayed by a repeated block-end')
+  assert.equal(frames.filter(frame => frame.id !== undefined).length, 1, 'identity rides one frame only')
+})
+
+await checkAsync('held arguments for a decoy stay hidden when its block-end names the decoy', async () => {
+  const lane = makeLane()
+  const base = await serve(lane)
+  lane.script = () => ({
+    chunks: [
+      { type: 'text-delta', index: 1, text: 'let me check' },
+      { type: 'tool-call-delta', index: 0, id: 'call_d', argumentsDelta: '{"command":' },
+      { type: 'tool-call-delta', index: 0, argumentsDelta: '"ls"}' },
+      { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'call_d', name: 'shell', arguments: '{"command":"ls"}' } },
+      { type: 'finish', reason: { kind: 'tool-calls' } },
+    ],
+    outcome: { text: 'let me check', toolCalls: [{ slot: 0, id: 'call_d', name: 'shell', arguments: '{"command":"ls"}' }] },
+  })
+  const response = await authFetch(base, '/v1/chat/completions', {
+    model: 'mimo-v2.6-flash-free', stream: true,
+    tools: [{ type: 'function', function: { name: 'mytool', parameters: { type: 'object', properties: {} } } }],
+  })
+  const body = await response.text()
+  assert.deepEqual(toolCallDeltas(body), [], 'held fragments must not leak before a decoy is rejected')
+  const finish = sseFrames(body).map(frame => frame.choices?.[0]?.finish_reason).filter(Boolean)
+  assert.deepEqual(finish, ['stop'], `got ${finish}`)
+})
+
 await checkAsync('a decoy tool call never reaches the streaming client', async () => {
   const lane = makeLane()
   const base = await serve(lane)

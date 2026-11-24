@@ -771,6 +771,10 @@ function createToolWire(body) {
   // client that cannot run the call.
   const classified = new Map()
   const held = new Map()
+  // Arguments leave `held` only when their call is admitted. A block-end must
+  // consult this set, not the presence of held fragments, when deciding
+  // whether the client has already received its arguments.
+  const forwardedArgs = new Set()
   return {
     /** Is this (restored) tool name one the caller can actually execute? */
     executable: name => !(FINGERPRINT_TOOLS.includes(name) && !declared.has(name)),
@@ -790,7 +794,9 @@ function createToolWire(body) {
       if (verdict === false) return { kind: 'drop' }
       const name = typeof chunk.name === 'string' && chunk.name !== '' ? chunk.name : undefined
       if (verdict === true) {
-        return { kind: 'forward', openAiIndex: this.indexOf(blockIndex), first: false, args: chunk.argumentsDelta ?? '' }
+        const args = chunk.argumentsDelta ?? ''
+        if (args !== '') forwardedArgs.add(blockIndex)
+        return { kind: 'forward', openAiIndex: this.indexOf(blockIndex), first: false, args }
       }
       if (name !== undefined) {
         const keep = this.executable(name)
@@ -798,10 +804,12 @@ function createToolWire(body) {
         if (!keep) return { kind: 'drop' }
         const parked = held.get(blockIndex)
         held.delete(blockIndex)
+        const args = [...parked?.args ?? [], chunk.argumentsDelta ?? ''].join('')
+        if (args !== '') forwardedArgs.add(blockIndex)
         return {
           kind: 'forward', openAiIndex: this.indexOf(blockIndex), first: true,
           id: chunk.id ?? parked?.id, name,
-          args: [...parked?.args ?? [], chunk.argumentsDelta ?? ''].join(''),
+          args,
         }
       }
       const parked = held.get(blockIndex) ?? { args: [] }
@@ -829,18 +837,25 @@ function createToolWire(body) {
       const name = typeof block?.name === 'string' ? block.name : ''
       if (name === '') return { kind: 'drop' }
       if (!this.executable(name)) { classified.set(blockIndex, false); return { kind: 'drop' } }
+      const namedEarlier = classified.get(blockIndex) === true
       classified.set(blockIndex, true)
       const parked = held.get(blockIndex)
       held.delete(blockIndex)
-      // Deltas already forwarded for this slot own its arguments; the block only
-      // fills in what they could not know (identity, and arguments when the
-      // adapter streamed none).
-      const streamed = parked !== undefined && parked.args.length > 0
-      const args = streamed ? parked.args.join('') : typeof block.arguments === 'string' ? block.arguments : ''
+      // Arguments held before the name arrived were never put on the wire. Send
+      // those exact fragments with the opening now; when none were held, the
+      // completed block supplies the call. Only arguments already forwarded are
+      // omitted so a repeated block-end cannot double them.
+      const heldArgs = parked?.args.join('') ?? ''
+      const args = forwardedArgs.has(blockIndex)
+        ? ''
+        : heldArgs !== '' ? heldArgs : typeof block.arguments === 'string' ? block.arguments : ''
+      // A block-end is another admission path: remember the bytes it supplies
+      // so a repeated close for the same tool block is idempotent.
+      if (args !== '') forwardedArgs.add(blockIndex)
       return {
-        kind: 'forward', openAiIndex: this.indexOf(blockIndex), first: !streamed,
+        kind: 'forward', openAiIndex: this.indexOf(blockIndex), first: !namedEarlier,
         id: typeof block.id === 'string' && block.id !== '' ? block.id : parked?.id,
-        name, args: streamed ? '' : args,
+        name, args,
       }
     },
   }
@@ -912,7 +927,8 @@ async function chatCompletions(req, res, complete, options = {}) {
   // `type: 'function'` goes on the opening frame because the non-streaming
   // branch already spells it and the official chunk shape carries it.
   const emitToolFrame = action => {
-    if (action.kind === 'drop') return
+    const wrote = { opening: false, args: false }
+    if (action.kind === 'drop') return wrote
     if (action.first) {
       sendSse(res, {
         id, object: 'chat.completion.chunk', created, model,
@@ -929,10 +945,13 @@ async function chatCompletions(req, res, complete, options = {}) {
           finish_reason: null,
         }],
       })
+      wrote.opening = true
     }
     if (action.args) {
       sendSse(res, { id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { tool_calls: [{ index: action.openAiIndex, function: { arguments: action.args } }] }, finish_reason: null }] })
+      wrote.args = true
     }
+    return wrote
   }
   // Which slots have had an opening frame written. An adapter that only closes
   // blocks still needs one synthesized frame per call, and a slot whose deltas
@@ -946,8 +965,8 @@ async function chatCompletions(req, res, complete, options = {}) {
       if (action.args) emitToolFrame({ ...action, first: false })
       return
     }
-    opened.add(key)
-    emitToolFrame(action)
+    const wrote = emitToolFrame(action)
+    if (wrote.opening) opened.add(key)
   }
   let outcome
   try {
@@ -972,10 +991,8 @@ async function chatCompletions(req, res, complete, options = {}) {
       // nothing to run. Emit the block through the same gate as a delta.
       if (chunk.type === 'block-end' && chunk.block?.type === 'tool-call') {
         const action = tools.admitBlockEnd(chunk.block, chunk.index)
-        // The slot's deltas already put its identity and arguments on the wire;
-        // the block-end only repeats them. Sending them again would double the
-        // arguments the client reassembles.
-        if (action.kind === 'forward' && opened.has(action.openAiIndex)) return
+        // `admitBlockEnd` suppresses arguments already forwarded, while still
+        // allowing a block-end to supply arguments after a name-only delta.
         emitAction(action)
         return
       }
