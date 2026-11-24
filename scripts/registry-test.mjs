@@ -49,9 +49,9 @@ const raw = fs.readFileSync(path.join(repo, 'src/providers/registry.json'), 'utf
 // The `free` category is empty on purpose: OpenCode's keyless pool needs a
 // per-request fingerprint the aggregate transport cannot carry, so it is not a
 // row here (see README's aggregate section) — the free lane serves it instead.
-const EXPECTED_PROVIDERS = 76
-const EXPECTED_BY_CATEGORY = { apikey: 61, 'free-tier': 10, local: 3, oauth: 2 }
-const EXPECTED_MODELS = 507
+const EXPECTED_PROVIDERS = 77
+const EXPECTED_BY_CATEGORY = { apikey: 61, 'free-tier': 10, local: 4, oauth: 2 }
+const EXPECTED_MODELS = 511
 const FLEETRELAY_MODELS = ['deepseek-v4.1-flash-free', 'gpt-6-astra']
 
 const byCategory = {}
@@ -169,12 +169,19 @@ check('every base URL is absolute, slash-free at the end, and double-slash-free'
 })
 
 // ── credentials ───────────────────────────────────────────────────────────────
-check('keyless and local providers carry a base URL and no credential env', () => {
+check('local and keyless providers carry a base URL; keyless rows have no credential env', () => {
   for (const provider of PROVIDERS) {
-    if (provider.category !== 'local' && provider.auth.kind !== 'none') continue
-    assert.ok(nonEmpty(provider.baseUrl), `${provider.id}: baseUrl is required`)
-    assert.equal(provider.auth.env, null, `${provider.id}: env must be null`)
+    if (provider.local || provider.auth.kind === 'none') assert.ok(nonEmpty(provider.baseUrl), `${provider.id}: baseUrl is required`)
+    if (provider.auth.kind === 'none') assert.equal(provider.auth.env, null, `${provider.id}: env must be null`)
   }
+})
+
+check('DeepSeek Bridge is a local endpoint requiring its own API key', () => {
+  const bridge = PROVIDERS.find(provider => provider.id === 'deepseek_bridge')
+  assert.equal(bridge.category, 'local')
+  assert.equal(bridge.baseUrl, 'http://127.0.0.1:8000/v1')
+  assert.equal(bridge.auth.kind, 'apiKey')
+  assert.equal(bridge.auth.env, 'DSF_BRIDGE_API_KEY')
 })
 
 check('apiKey providers name an env var and a credential URL', () => {

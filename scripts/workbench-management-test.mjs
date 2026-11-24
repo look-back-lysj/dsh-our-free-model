@@ -89,7 +89,7 @@ try {
   })
   await check('provider directory exposes every preset with no stored secret', async () => {
     const before = await api('/providers')
-    assert.equal(before.body.registry.length, 76)
+    assert.equal(before.body.registry.length, 77)
     assert.deepEqual(before.body.configured, {})
     const saved = await api('/providers/save', { providerId: 'deepseek', apiKey: 'isolated-provider-secret', enabled: true, models: ['http-test'] })
     assert.equal(saved.status, 200)

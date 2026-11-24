@@ -4,7 +4,7 @@
  * The plugin already owns three model lanes whose ids it mints itself: the
  * anonymous free lane, the EAC co-paid lane and the Kilo channel. This module
  * adds a fourth, orthogonal namespace — upstream providers a user reaches with
- * their own key, or, for the keyless and local ones, with no account at all.
+ * their own key, or no credential when the provider declares keyless access.
  * The data lives in `registry.json` so a provider can be added, corrected or
  * dropped in one diffable file; nothing in this module reaches the network, and
  * a record's `source` and optional `sourceUrl` identify its catalog or documentation.
@@ -36,7 +36,7 @@ import { isDeniedChannel } from '../magpie-policy.js'
 /** The three wire formats the registry can name. */
 export const FORMAT_VALUES = Object.freeze(['openai-chat', 'openai-responses', 'anthropic-messages'])
 
-/** How a provider is made available; `none` covers the keyless and local rows. */
+/** How a provider authenticates; local endpoints may also require an API key. */
 export const AUTH_KINDS = Object.freeze(['apiKey', 'none', 'oauth', 'adc'])
 
 /**
