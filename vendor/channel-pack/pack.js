@@ -36289,11 +36289,6 @@ var QoderEncryptedInfer = class _QoderEncryptedInfer {
         );
       })
     );
-    const headerMap = g.takeObject(g.exports.requestresult_headers(result));
-    const headers = {};
-    if (headerMap instanceof Map) {
-      for (const [k, v] of headerMap) headers[String(k)] = String(v);
-    }
     const readResultString = (invoke) => {
       let out = "";
       let outPtr = 0;
@@ -36311,14 +36306,21 @@ var QoderEncryptedInfer = class _QoderEncryptedInfer {
       }
       return out;
     };
-    const prepared = {
-      // ⚠️ 参数顺序：(栈指针, ptr) —— 与直觉相反
-      url: readResultString((stack, ptr) => g.exports.requestresult_url(stack, ptr)),
-      headers,
-      body: readResultString((stack, ptr) => g.exports.requestresult_body(stack, ptr))
-    };
-    g.exports.__wbg_requestresult_free(result);
-    return prepared;
+    try {
+      const headerMap = g.takeObject(g.exports.requestresult_headers(result));
+      const headers = {};
+      if (headerMap instanceof Map) {
+        for (const [k, v] of headerMap) headers[String(k)] = String(v);
+      }
+      return {
+        // ⚠️ 参数顺序：(栈指针, ptr) —— 与直觉相反
+        url: readResultString((stack, ptr) => g.exports.requestresult_url(stack, ptr)),
+        headers,
+        body: readResultString((stack, ptr) => g.exports.requestresult_body(stack, ptr))
+      };
+    } finally {
+      g.exports.__wbg_requestresult_free(result);
+    }
   }
   /**
    * Release the wasm `QoderContext` this client owns.

@@ -419,6 +419,32 @@ async function verifySourceRegressions({ ctx, adapters, call, creds }) {
     const { QoderAdapter } = await import('../vendor/channel-pack/src/qoder-adapter.ts')
     const { QoderEncryptedInfer } = await import('../vendor/channel-pack/src/qoder-wasm.ts')
     const { QODER_CN } = await import('../vendor/channel-pack/src/qoder-product.ts')
+    // Exercise ownership after WASM has returned a result, including a failed read.
+    const released = []
+    const readError = new Error('fixture header read failed')
+    const resultPointer = 42
+    const glue = {
+      withStrings: () => resultPointer,
+      exports: {
+        requestresult_headers: () => { throw readError },
+        __wbg_requestresult_free: ptr => released.push(ptr),
+      },
+    }
+    const metadata = { client_type: 'test', business_product: 'test', business_type: 'test', scene: 'test' }
+    const ask = { modelKey: 'fixture', userText: 'offline' }
+    const failingClient = new QoderEncryptedInfer(glue, 1, metadata, 'localhost')
+    assert.throws(() => failingClient.prepareInfer(ask), error => error === readError)
+    assert.deepEqual(released, [resultPointer])
+
+    const offlineClient = await QoderEncryptedInfer.create({
+      user: { uid: 'fixture', securityOauthToken: 'fixture' }, machineId: 'fixture', metadata, host: 'localhost',
+    })
+    try {
+      for (let round = 0; round < 3; round++) assert.ok(offlineClient.prepareInfer(ask).body.length > 0)
+    } finally {
+      offlineClient.dispose()
+    }
+    console.log('ok  qoder WASM results are released on read failure and repeated local requests succeed')
     const originalCreate = QoderEncryptedInfer.create
     const originalEnvTimeout = process.env.DSH_QODER_QUEUE_TIMEOUT_MS
     const credential = token => ({
@@ -437,7 +463,7 @@ async function verifySourceRegressions({ ctx, adapters, call, creds }) {
     }
 
     // 模拟不同账号的请求签名输入，专注验证重试状态机；不访问 Qoder 或消耗真实额度。
-    QoderEncryptedInfer.create = async () => ({ prepareInfer: () => ({ url: 'fixture:', headers: {}, body: '{}' }) })
+    QoderEncryptedInfer.create = async () => ({ dispose() {}, prepareInfer: () => ({ url: 'fixture:', headers: {}, body: '{}' }) })
     const run = async ({
       kind, candidates = ['b'], responseForAttempt, abortOnSleep = false,
       addCandidateAfterLookup = false, product, queueTimeoutMs, allowRefresh = false,
@@ -505,6 +531,7 @@ async function verifySourceRegressions({ ctx, adapters, call, creds }) {
       }
       // 把 token 写进测试请求，便于断言每次发送实际使用了哪个账号。
       QoderEncryptedInfer.create = async ({ user }) => ({
+        dispose() {},
         prepareInfer: () => ({ url: 'fixture:', headers: {}, body: user.securityOauthToken }),
       })
       let error
@@ -551,7 +578,7 @@ async function verifySourceRegressions({ ctx, adapters, call, creds }) {
             sent.push([options.model, request.body])
             return request.body.endsWith('-new') ? answerSse('bound-ok') : Response.json({ code: 105, message: 'expired' }, { status: 401 })
           }
-          QoderEncryptedInfer.create = async ({ user }) => ({ prepareInfer: () => ({ url: 'fixture:', headers: {}, body: user.securityOauthToken }) })
+          QoderEncryptedInfer.create = async ({ user }) => ({ dispose() {}, prepareInfer: () => ({ url: 'fixture:', headers: {}, body: user.securityOauthToken }) })
           await Promise.all(['a', 'b'].map(id => collect(adapter.stream({ ...qoderOptions, model: `fixture-${id}` }))))
           assert.deepEqual(sent.filter(([model]) => model === 'fixture-a').map(([, token]) => token), ['token-a', 'token-a-new'])
           assert.deepEqual(sent.filter(([model]) => model === 'fixture-b').map(([, token]) => token), expiredB ? ['token-b-new'] : ['token-b', 'token-b-new'])
