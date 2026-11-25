@@ -1,5 +1,5 @@
 {
-  "version": "2.9.0",
+  "version": "2.9.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -14,8 +14,8 @@
     },
     {
       "path": "client.js",
-      "size": 687907,
-      "sha256": "de7f5ccca6e1a9f118233477c8c4a0b060d73e88f5b00d5edac11a616f19b65e"
+      "size": 688342,
+      "sha256": "d054e85308ce044cc238affccb5c6df2275ed743ae08d5f943a77b6edefbe5d5"
     },
     {
       "path": "cordis.patch.yml",
@@ -50,7 +50,7 @@
     {
       "path": "package.json",
       "size": 5162,
-      "sha256": "4f4bdbb92dcf34a1ed2d0c6bd3a9d7016c548b3089ebbcca48422a9a7ca592ca"
+      "sha256": "7eb39134181821abd1f8c73870f802eba0e474ba5e688e67d51d6222e4d8c651"
     },
     {
       "path": "src/adapter.js",
@@ -114,8 +114,8 @@
     },
     {
       "path": "src/eac.js",
-      "size": 19842,
-      "sha256": "da60cf3152345b67900173e8d720f748e605c79a705733ccfd3b6e1567bc2bbd"
+      "size": 23776,
+      "sha256": "d7f899d4fd40f57f74a1a2e15260b88abbcd335cd3a8ceeee6bb8038bc1fe330"
     },
     {
       "path": "src/effort.js",
@@ -124,8 +124,8 @@
     },
     {
       "path": "src/egress.js",
-      "size": 65793,
-      "sha256": "b0c76aa12d295a32ac3eb6c176d32005ef762ba570dc905067c054a442f2e132"
+      "size": 66589,
+      "sha256": "3367e4002bfe88c83284fc915f63e9e423a789ecec998ebb9b865abe05d7e282"
     },
     {
       "path": "src/engine-parts/win32-x64.000.part",
@@ -194,8 +194,8 @@
     },
     {
       "path": "src/feed.js",
-      "size": 27619,
-      "sha256": "b5a9363c8497f883b48660e1bbddd2647cbd6e8135fc0c84f603db3aece9a515"
+      "size": 28013,
+      "sha256": "ff966c93f47c5c88d24dabfe4658ac22fcb5c6b824cd53b16a1002e7c1449c76"
     },
     {
       "path": "src/forward.js",
@@ -355,12 +355,12 @@
     {
       "path": "src/vault-anchor.js",
       "size": 192,
-      "sha256": "0ac4dfb79cc037af8a0c568eaa067bfac0402ac84030cb3ad709a7feaafae7f6"
+      "sha256": "a50dcd7bfe2092d09d5bae4849a06b428e531cec72681de048bffdde998e4e9e"
     },
     {
       "path": "src/vault-data.js",
-      "size": 566,
-      "sha256": "c5d33a4607a8834615da00c32daa81899bb73f6096bc0a2b0b74f45ba4232f57"
+      "size": 546,
+      "sha256": "d6f11f1b4d7bcf854d6f8edb606b310734ddc880976ad2b00798fefb2add11df"
     },
     {
       "path": "src/vault.js",
