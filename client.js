@@ -8029,7 +8029,13 @@ window.__ModuleLoader__.load({
     // upgrader triggers — comes back to the page the user was reading.
     const EFFECTS_KEY = 'ofm.visualEffects'
     const TAB_KEY = 'ofm.tab'
-    const TABS = ['free', 'eac', 'channels', 'aggregate', 'workspace', 'extensions', 'saver', 'routing', 'ledger', 'logs', 'gateway', 'upgrade', 'picks', 'feedback']
+    // The replacement gateway does not run the feedback collector, and the old
+    // Beichen host is being retired. Keep the page implementation for a future
+    // self-hosted collector, but do not advertise an entry that can only fail:
+    // the server half still honours an explicit `settings.feedbackUrl`.
+    const FEEDBACK_ENABLED = false
+    const TABS = ['free', 'eac', 'channels', 'aggregate', 'workspace', 'extensions', 'saver', 'routing', 'ledger', 'logs', 'gateway', 'upgrade', 'picks']
+    if (FEEDBACK_ENABLED) TABS.push('feedback')
     const WORKSPACE_CSS = `
       .who{min-width:0}
       .who .name,.nm .n,.lib-path{white-space:normal!important;overflow-wrap:anywhere;overflow:visible!important;text-overflow:clip!important}
@@ -8334,7 +8340,7 @@ window.__ModuleLoader__.load({
         ['gateway', t('nav.tab.gateway'), null],
         ['upgrade', t('nav.tab.upgrade'), null],
         ['picks', t('nav.tab.picks'), null],
-        ['feedback', t('nav.tab.feedback'), null],
+        ...(FEEDBACK_ENABLED ? [['feedback', t('nav.tab.feedback'), null]] : []),
       ]
       const nav = h('nav', { className: 'ofm_nav' },
         h('span', { className: 'ofm_navbrand' },
@@ -8384,7 +8390,7 @@ window.__ModuleLoader__.load({
                       ? h(UpgradePage, { t, settings: data.settings, onApply: apply, busy })
                     : tab === 'picks'
                       ? h(PicksPage, { t, effects })
-                    : tab === 'feedback'
+                    : tab === 'feedback' && FEEDBACK_ENABLED
                       ? h(FeedbackPage, { t, version: data.version })
                     : tab === 'eac'
                       ? h(EacPage, { t, data, counts, summary, stats, eacAuth, setEacAuth, eacLogin, busy, catalogBusy, apply, bench, benches, refresh, reprobe })

@@ -22,9 +22,11 @@
  */
 
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import https from 'node:https'
 import http from 'node:http'
 import path from 'node:path'
+import tls from 'node:tls'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { Readable } from 'node:stream'
@@ -37,6 +39,76 @@ import { openTunnel } from './egress.js'
 
 const LISTING_TIMEOUT_MS = 15000
 const TURN_TIMEOUT_MS = 300000
+
+/**
+ * The private root Caddy issued for the replacement gateway. The endpoint is
+ * an IP literal, so there is no public name or public chain to validate; this
+ * one root is the trust anchor, and the leaf is still verified against it.
+ *
+ * Kept as a request option (`ca`) rather than `NODE_EXTRA_CA_CERTS`: the
+ * environment variable is process-wide and would also relax the free lane and
+ * every other TLS client, while this anchor belongs to the EAC gateway alone.
+ * Passing `ca` replaces Node's default public root list for this request, so
+ * the pinned root is appended to `tls.rootCertificates` — the old public
+ * endpoint keeps working through the transition, and a private root is still
+ * the only addition.
+ *
+ * The PEM lives here rather than in a new shipped `assets/` file: the release
+ * set is at 80 files, and the 1.3.1 / 2.5.9 upgraders reject a manifest above
+ * 80 (`MAX_FILES`); one extra file would strand those installs. Embedding also
+ * keeps every distribution mode (npm tarball, standalone ZIP, desktop
+ * resources) from silently omitting the anchor.
+ */
+const EAC_ROOT_CA_PEM = `-----BEGIN CERTIFICATE-----
+MIIBpDCCAUqgAwIBAgIRAJqZlwxvOJsdnT8seZoNg/IwCgYIKoZIzj0EAwIwMDEu
+MCwGA1UEAxMlQ2FkZHkgTG9jYWwgQXV0aG9yaXR5IC0gMjAyNiBFQ0MgUm9vdDAe
+Fw0yNjExMjUxMjE1MjVaFw0zNjEwMDMxMjE1MjVaMDAxLjAsBgNVBAMTJUNhZGR5
+IExvY2FsIEF1dGhvcml0eSAtIDIwMjYgRUNDIFJvb3QwWTATBgcqhkjOPQIBBggq
+hkjOPQMBBwNCAAR0vIplyzGyjBLXAWVjQk1CWI2iVLExQqAHa1+AsiEndtUhnJM8
+mtJHTvaHdA23MJiSiY3WWsbp2tDLNRSux9hPo0UwQzAOBgNVHQ8BAf8EBAMCAQYw
+EgYDVR0TAQH/BAgwBgEB/wIBATAdBgNVHQ4EFgQUUdX/Tfmu61OZYLo2WUKapbAQ
+pdcwCgYIKoZIzj0EAwIDSAAwRQIgB1EAFZem1xf2xoFw5f19GJtap/agoZQsNC/L
+3Pse5e4CIQDTx8T7LyzxgXuVoFpMeEWPzC+QnxpU/1VHXOwitGmMIQ==
+-----END CERTIFICATE-----
+`
+const EAC_ROOT_CA_FINGERPRINT256 = '9B:68:F3:19:32:19:0F:93:29:27:6E:86:9D:52:9F:BB:18:08:AA:E4:E5:A7:A0:A7:FB:83:15:81:94:88:6D:28'
+let eacRootCa
+
+/**
+ * Read and pin the shipped root CA. Missing, unreadable, non-CA or
+ * fingerprint-mismatched material is a hard failure: the lane must not fall
+ * back to the public trust store, and it must never trust a leaf certificate.
+ *
+ * Exported so the offline suite can exercise the failure paths without a
+ * network or a real certificate rotation.
+ */
+export function loadEacRootCa(file) {
+  let bytes
+  if (file === undefined) {
+    if (EAC_ROOT_CA_PEM.trim() === '') throw new UpstreamError('EAC trust store missing: the embedded root CA is empty; refusing to connect to the EAC gateway', CODE.transport)
+    bytes = Buffer.from(EAC_ROOT_CA_PEM, 'utf8')
+  } else {
+    try { bytes = fs.readFileSync(file) } catch {
+      throw new UpstreamError('EAC trust store missing: the supplied root CA is unreadable; refusing to connect to the EAC gateway', CODE.transport)
+    }
+  }
+  let certificate
+  try { certificate = new crypto.X509Certificate(bytes) } catch {
+    throw new UpstreamError(`EAC trust store invalid: the ${file === undefined ? 'embedded' : 'supplied'} root CA is not a PEM certificate`, CODE.transport)
+  }
+  if (certificate.ca !== true) {
+    throw new UpstreamError('EAC trust store invalid: the shipped certificate is a leaf, not a root CA', CODE.transport)
+  }
+  if (certificate.fingerprint256.toUpperCase() !== EAC_ROOT_CA_FINGERPRINT256) {
+    throw new UpstreamError('EAC trust store rejected: the shipped root CA fingerprint does not match the pinned value', CODE.transport)
+  }
+  return bytes
+}
+
+function eacTrustCa() {
+  eacRootCa ??= loadEacRootCa()
+  return [...tls.rootCertificates, eacRootCa]
+}
 
 /**
  * Test seam: the offline suite drives this lane through a fetch-shaped stub
@@ -201,6 +273,10 @@ async function laneFetch(url, { method = 'GET', headers = {}, body = undefined, 
       path: forward ? target.href : target.pathname + target.search,
       method,
       agent: agent ?? (forward ? false : undefined),
+      // Direct HTTPS only. A tunnel from src/egress.js has already completed
+      // its TLS handshake before the socket reaches this agent, so `ca` here
+      // would be ignored there; the direct path is the one this anchor guards.
+      ...(transport === https ? { ca: eacTrustCa() } : {}),
       headers: {
         ...headers,
         ...proxyUrl ? { host: target.host } : {},

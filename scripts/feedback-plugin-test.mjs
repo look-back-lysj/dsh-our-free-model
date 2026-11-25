@@ -9,8 +9,8 @@
  *  2. 登录令牌不出进程。页面只该拿到「是谁登录了」，拿不到能冒名提交的凭据。
  *  3. 失败不能伪装成成功。缺单号、上游 401 都必须让调用方看见。
  *
- * 另外检查页面真的挂上了：标签页在导航里、提交按钮在未填内容时禁用、
- * 401 之后正文还留在输入框里。
+ * 另外检查入口状态：迁移后新服务器没有反馈收集器，标签页必须从导航撤下，
+ * 但页面实现与自建 feedbackUrl 的服务端兼容要保留。
  *
  * Run: node scripts/feedback-plugin-test.mjs
  */
@@ -62,9 +62,9 @@ const persist = patch => { settings = { ...settings, ...patch } }
 const feedback = createFeedback({ settings: () => settings, persist })
 
 try {
-  await check('默认地址保留 /feedback 前缀（丢掉它会让登录与提交全部 404）', () => {
-    const resolved = feedbackBaseOf(() => ({ feedbackUrl: '' }))
-    assert.equal(resolved, 'https://ourfreemodel.beichenapi.com/feedback')
+  await check('未配置 feedbackUrl 时反馈服务关闭，不再回退已停用的旧域名', () => {
+    assert.throws(() => feedbackBaseOf(() => ({ feedbackUrl: '' })), /反馈服务已关闭/)
+    assert.throws(() => feedbackBaseOf(() => ({})), /反馈服务已关闭/)
   })
 
   await check('自定义基址保留路径，只削掉结尾斜杠', () => {
@@ -279,17 +279,23 @@ try {
   // 真正点得动由 scripts/feedback-plugin-ui-test.mjs 在真浏览器里跑。
   const source = fs.readFileSync(new URL('../client.js', import.meta.url), 'utf8')
 
-  await check('导航里有反馈标签页，且派发到 FeedbackPage', () => {
-    assert.match(source, /\['feedback', t\('nav\.tab\.feedback'\), null\]/)
-    assert.match(source, /tab === 'feedback'\s*\?\s*h\(FeedbackPage/)
+  await check('反馈标签页已从导航撤下，页面实现保留在开关后面', () => {
+    assert.match(source, /const FEEDBACK_ENABLED = false/)
+    const navLine = source.split('\n').find(line => line.includes("t('nav.tab.feedback')"))
+    assert.ok(navLine !== undefined, '导航里的反馈文案引用消失，无法确认开关仍在原位')
+    assert.ok(navLine.includes('FEEDBACK_ENABLED'), '反馈标签页没有被 FEEDBACK_ENABLED 包住')
+    assert.match(source, /tab === 'feedback' && FEEDBACK_ENABLED\s*\?\s*h\(FeedbackPage/)
   })
 
-  // 这个白名单决定"上次停留的标签页能不能恢复"。少写一个 id 不会报错：导航里
-  // 有、点得动，但刷新后永远弹回 free —— 正是这条用例抓到过的真实缺陷。
-  await check('反馈标签页登记在 TABS 白名单里（否则刷新后恢复不了）', () => {
+  // 这个白名单决定"上次停留的标签页能不能恢复"。反馈入口撤下后 feedback 必须
+  // 同时离开白名单，否则旧书签会恢复到一个没有导航入口的孤儿页面。
+  await check('TABS 白名单不再包含 feedback，旧书签回落到 free', () => {
     const tabs = source.match(/const TABS = \[([^\]]+)\]/)
     assert.ok(tabs !== null, 'TABS 白名单未找到')
-    assert.ok(tabs[1].includes("'feedback'"), 'TABS 缺少 feedback，刷新后会弹回 free')
+    assert.equal(tabs[1].includes("'feedback'"), false, 'TABS 仍包含 feedback，旧书签会打开已撤下的页面')
+    for (const id of ['free', 'eac', 'channels', 'aggregate', 'workspace', 'extensions', 'saver', 'routing', 'ledger', 'logs', 'gateway', 'upgrade', 'picks']) {
+      assert.ok(tabs[1].includes(`'${id}'`), `TABS 缺少 ${id}，刷新后会弹回 free`)
+    }
   })
 
   await check('五个路由都被页面用上', () => {

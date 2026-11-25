@@ -76,13 +76,18 @@ const html = `<!doctype html><html lang="zh-CN" data-theme="dark"><head><meta ch
 [data-theme=dark]{--dsw-alias-label-primary:#ebebee;--dsw-alias-label-secondary:#b5b5be;--dsw-alias-label-tertiary:#91919d;--dsw-alias-bg-layer-1:#1c1c20;--dsw-alias-bg-layer-2:#25252a;--dsw-alias-bg-layer-3:#33333a;--dsw-alias-border-l1:#393940;--dsw-alias-border-l2:#4e4e59;--dsw-alias-state-business-primary:#94b4ff;color-scheme:dark}
 body{margin:0;padding:20px;box-sizing:border-box;background:var(--dsw-alias-bg-layer-1);font:14px 'Segoe UI','Microsoft YaHei',sans-serif}#root{max-width:1080px;margin:auto;min-width:0}button,input,textarea{font-family:inherit}
 </style></head><body><div id="root"></div><script src="/react.js"></script><script>window.__ModuleLoader__={load:r=>window.plugin=r.factory(name=>name==='react-dom'?window.testReactDOM:window.testReact)};</script><script src="/client.js"></script><script>
-const {CSS,DICT,Shell}=plugin.__test;
+const {CSS,DICT,Shell,FeedbackPage}=plugin.__test;
 document.head.append(Object.assign(document.createElement('style'),{textContent:CSS}));
 const t=key=>DICT.zh[key]??key;t.locale='zh-CN';
 const data={settings:{},catalog:[],version:'2.8.4'};
-window.createRoot(document.getElementById('root')).render(window.testReact.createElement(Shell,{
-  t,data,summary:{data,reload(){}},counts:{},stats:{reload(){}},ctx:{},eacLogin:{}
-}));
+const mount=window.createRoot(document.getElementById('root'));
+if(new URLSearchParams(location.search).get('view')==='feedback'){
+  mount.render(window.testReact.createElement(FeedbackPage,{t,version:'2.8.4'}));
+}else{
+  mount.render(window.testReact.createElement(Shell,{
+    t,data,summary:{data,reload(){}},counts:{},stats:{reload(){}},ctx:{},eacLogin:{}
+  }));
+}
 </script></body></html>`
 
 const server = http.createServer((req, res) => {
@@ -115,17 +120,20 @@ try {
   page.on('pageerror', error => pageErrors.push(error.message))
   // 授权页会在新标签打开；拦掉它，避免真的弹窗。
   await page.addInitScript(() => { window.open = () => null })
-  await page.addInitScript(() => localStorage.setItem('ofm.tab', 'feedback'))
 
   await page.goto(origin)
-  await page.locator('#ofm-tab-feedback[aria-selected=true]').waitFor()
+  await page.locator('.ofm_shell').waitFor()
 
-  await check('导航里出现「反馈与许愿」并可直接选中', async () => {
-    assert.equal(await page.locator('#ofm-tab-feedback').textContent().then(v => v.includes('反馈与许愿')), true)
+  await check('导航里不再出现反馈标签页', async () => {
+    assert.equal(await page.locator('#ofm-tab-feedback').count(), 0)
+    assert.equal(await page.locator('.ofm_tabs [role="tab"]').count(), 13)
   })
 
+  // 页面实现仍保留在开关后面：直接挂载时可以继续验证 device flow 与提交。
+  await page.goto(`${origin}?view=feedback`)
+  await page.locator('.ofm_fbgate').waitFor()
+
   await check('未登录时只显示登录门槛，没有表单', async () => {
-    await page.locator('.ofm_fbgate').waitFor()
     assert.equal(await page.locator('.ofm_fbform').count(), 0)
   })
 

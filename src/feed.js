@@ -370,7 +370,11 @@ export class AnnouncementFeed {  /**
 // but that one is bound to the paid EAC gateway and validates a star; a change
 // made for feedback must never be able to break the paid lane.
 
-const FEEDBACK_DEFAULT_BASE = 'https://ourfreemodel.beichenapi.com/feedback'
+// The replacement gateway has no feedback collector. Keep an explicit
+// `settings.feedbackUrl` working for a self-hosted collector, but never fall
+// back to the retired domain: after the old host shuts down every report would
+// fail with a misleading transport error instead of saying the service is off.
+const FEEDBACK_DEFAULT_BASE = ''
 const FEEDBACK_MAX_TITLE = 120
 const FEEDBACK_MAX_DETAIL = 8000
 const FEEDBACK_KINDS = new Set(['bug', 'wish'])
@@ -392,6 +396,7 @@ const feedbackFail = (statusCode, message) => Object.assign(new Error(message), 
 export function feedbackBaseOf(settings) {
   const raw = typeof settings()?.feedbackUrl === 'string' ? settings().feedbackUrl.trim() : ''
   const value = raw || FEEDBACK_DEFAULT_BASE
+  if (value === '') throw feedbackFail(503, '反馈服务已关闭；如需自建收集器，请在设置中填写 feedbackUrl')
   let parsed
   try { parsed = new URL(value) } catch { throw feedbackFail(400, '反馈服务器地址无效') }
   const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname)

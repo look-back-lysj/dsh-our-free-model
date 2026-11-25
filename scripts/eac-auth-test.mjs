@@ -30,8 +30,11 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
+import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
+import { EventEmitter } from 'node:events'
+import { Readable } from 'node:stream'
 
 let failures = 0
 const check = (name, actual, expected) => {
@@ -176,6 +179,50 @@ relay.port = relay.server.address().port
   check('and reports a non-2xx without throwing', [missing.ok, missing.status], [false, 404])
   const aborted = await nodeFetch(`http://127.0.0.1:${relay.port}/v1/models`, { signal: AbortSignal.abort() }).then(() => 'resolved', error => String(error?.message ?? error))
   check('an aborted signal rejects the call', /abort/i.test(aborted), true)
+}
+
+// ── 0c. the shipped root CA is pinned to the EAC HTTPS request ───────────────
+// The replacement gateway is an IP literal behind Caddy's private 2026 ECC
+// root. Trust must travel as a per-request `ca`, not as a process-wide
+// NODE_EXTRA_CA_CERTS, and a missing anchor must fail closed.
+{
+  const { loadEacRootCa, lane } = await import('../src/eac.js')
+  const expected = '9B:68:F3:19:32:19:0F:93:29:27:6E:86:9D:52:9F:BB:18:08:AA:E4:E5:A7:A0:A7:FB:83:15:81:94:88:6D:28'
+  const certificate = new crypto.X509Certificate(loadEacRootCa())
+  check('the shipped EAC root is the pinned CA, not a leaf', [certificate.fingerprint256, certificate.ca], [expected, true])
+  let missing = 'no error'
+  try { loadEacRootCa(new URL('./missing-eac-root-ca.crt', import.meta.url)) } catch (error) { missing = String(error?.message ?? error) }
+  check('a missing trust store fails closed with a readable message', /trust store missing/.test(missing), true)
+
+  const original = https.request
+  const seen = []
+  lane.fetch = null
+  lane.proxy = null
+  https.request = (options, callback) => {
+    seen.push(options)
+    const request = new EventEmitter()
+    request.write = () => {}
+    request.destroy = () => {}
+    request.end = () => {
+      const response = new Readable({ read() { this.push(null) } })
+      response.statusCode = 200
+      response.headers = { 'content-type': 'application/json' }
+      callback(response)
+    }
+    return request
+  }
+  try {
+    await fetchSealedListing({ mode: 'worker', base: 'https://202.189.51.40/eac/v1', signingSecret: SIGNING })
+  } finally {
+    https.request = original
+    lane.proxy = undefined
+  }
+  const options = seen.at(-1) ?? {}
+  const roots = Array.isArray(options.ca) ? options.ca : []
+  check('the EAC HTTPS request carries the pinned root CA', roots.some(entry => {
+    try { return new crypto.X509Certificate(entry).fingerprint256 === expected } catch { return false }
+  }), true)
+  check('the request never disables certificate verification', options.rejectUnauthorized, undefined)
 }
 
 // ── 1. the OAuth surface ─────────────────────────────────────────────────────
