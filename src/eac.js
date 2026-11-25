@@ -247,7 +247,7 @@ async function laneFetch(url, { method = 'GET', headers = {}, body = undefined, 
       socket = await openTunnel(target, { kind: 'url', url: proxyUrl }, pending => {
         socket = pending
         if (signal?.aborted) abortDial()
-      })
+      }, target.protocol === 'https:' ? { ca: eacTrustCa() } : undefined)
       if (signal?.aborted) {
         socket.destroy()
         throw new UpstreamError('request aborted', CODE.aborted)

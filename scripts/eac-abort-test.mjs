@@ -1,8 +1,12 @@
+import crypto from 'node:crypto'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import https from 'node:https'
+import tls from 'node:tls'
 import test from 'node:test'
-import { directFetch, lane } from '../src/eac.js'
+import { EventEmitter } from 'node:events'
+import { Readable } from 'node:stream'
+import { directFetch, lane, loadEacRootCa } from '../src/eac.js'
 import { CODE, UpstreamError } from '../src/http.js'
 
 const aborted = error => error instanceof UpstreamError && error.code === CODE.aborted
@@ -109,6 +113,66 @@ await test('cancelling EAC closes a stalled proxy CONNECT handshake', { timeout:
   } finally {
     lane.proxy = savedProxy
     tunnel?.destroy()
+    await new Promise(resolve => proxy.close(resolve))
+  }
+})
+
+await test('the EAC proxy tunnel hands the pinned root CA to target TLS', { timeout: 5000 }, async () => {
+  const saved = { connect: tls.connect, request: http.request, proxy: lane.proxy, fetch: lane.fetch }
+  const proxy = http.createServer()
+  const tunnels = new Set()
+  let connectSeen = false
+  proxy.on('connect', (req, socket) => {
+    connectSeen = true
+    tunnels.add(socket)
+    socket.on('close', () => tunnels.delete(socket))
+    assert.equal(req.url, 'fixture.invalid:443')
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+  })
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve))
+  let tlsOptions
+  try {
+    lane.fetch = null
+    lane.proxy = `http://127.0.0.1:${proxy.address().port}`
+    tls.connect = options => {
+      tlsOptions = options
+      const secured = new EventEmitter()
+      secured.destroy = () => {}
+      secured.setTimeout = () => secured
+      secured.setNoDelay = () => secured
+      process.nextTick(() => secured.emit('secureConnect'))
+      return secured
+    }
+    http.request = (_options, callback) => {
+      const request = new EventEmitter()
+      request.write = () => {}
+      request.destroy = error => { if (error) request.emit('error', error) }
+      request.end = () => {
+        const response = new Readable({ read() { this.push(null) } })
+        response.statusCode = 200
+        response.headers = { 'content-type': 'application/json' }
+        callback(response)
+        request.emit('close')
+      }
+      return request
+    }
+
+    const response = await directFetch('https://fixture.invalid/eac/v1/models')
+    assert.equal(response.status, 200)
+    assert.equal(connectSeen, true)
+    assert.equal(tlsOptions?.servername, 'fixture.invalid')
+    assert.equal(tlsOptions?.ALPNProtocols?.includes('http/1.1'), true)
+    const expected = new crypto.X509Certificate(loadEacRootCa()).fingerprint256
+    const roots = Array.isArray(tlsOptions?.ca) ? tlsOptions.ca : []
+    assert.equal(roots.some(entry => {
+      try { return new crypto.X509Certificate(entry).fingerprint256 === expected } catch { return false }
+    }), true, 'target TLS did not receive the pinned EAC root CA')
+  } finally {
+    tls.connect = saved.connect
+    http.request = saved.request
+    lane.proxy = saved.proxy
+    lane.fetch = saved.fetch
+    for (const socket of tunnels) socket.destroy()
     await new Promise(resolve => proxy.close(resolve))
   }
 })

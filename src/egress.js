@@ -974,8 +974,13 @@ function failOnce(res, error) {
 /**
  * Connect to `upstream` through `outlet` and return a socket ready for plain
  * http framing — already TLS-wrapped when the target is https.
+ *
+ * `tlsOptions.ca` applies to the **target** handshake only. The proxy's own
+ * https handshake in `httpConnect` stays on Node's default trust store: a
+ * caller pinning a private gateway root must not also pin the proxy's public
+ * certificate chain.
  */
-export async function openTunnel(upstream, outlet, onSocket) {
+export async function openTunnel(upstream, outlet, onSocket, { ca } = {}) {
   const isTls = upstream.protocol === 'https:'
   const host = upstream.hostname
   const port = Number(upstream.port) || (isTls ? 443 : 80)
@@ -995,6 +1000,7 @@ export async function openTunnel(upstream, outlet, onSocket) {
       // An IP literal has no name to assert; the lane's hosts are names.
       servername: net.isIP(host) === 0 ? host : undefined,
       ALPNProtocols: ['http/1.1'],
+      ...(ca === undefined ? {} : { ca }),
     })
     secured.once('secureConnect', () => resolve(secured))
     secured.once('error', error => { secured.destroy(); reject(error) })

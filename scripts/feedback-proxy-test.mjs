@@ -195,23 +195,14 @@ try {
     } finally { settings = { ...settings, feedbackUrl: previous } }
   })
 
-  await check('默认基址同样保留 /feedback 前缀', async () => {
+  await check('未配置 feedbackUrl 时返回 503「反馈服务已关闭」', async () => {
     const previous = settings.feedbackUrl
     received.length = 0
     settings = { ...settings, feedbackUrl: '' }
     try {
-      // 默认地址是 https 的远端，这里只验证拼出来的 URL，不真的联网：
-      // 用假 fetch 记录请求地址即可。
-      const seen = []
-      const realFetch = globalThis.fetch
-      globalThis.fetch = async (url) => {
-        seen.push(String(url))
-        throw new Error('offline')
-      }
-      try { await feedback.start() } catch { /* 预期：假 fetch 直接失败 */ }
-      finally { globalThis.fetch = realFetch }
-      assert.ok(seen.length === 1, `expected one attempt, got ${seen.length}`)
-      assert.match(seen[0], /\/feedback\/api\/auth\/start$/, `default base lost its /feedback prefix: ${seen[0]}`)
+      await assert.rejects(() => feedback.start(), error =>
+        error.statusCode === 503 && /反馈服务已关闭/.test(error.message))
+      assert.equal(received.length, 0, 'a closed feedback service must not reach the network')
     } finally { settings = { ...settings, feedbackUrl: previous } }
   })
 } finally {

@@ -73,4 +73,13 @@ check('App resolves a plugin page to the sandbox host', () => {
   assert.match(app, /<PluginPage page=\{pluginPage\} onNotice=\{setNotice\} \/>/)
 })
 
+check('the retired feedback entry is not in the core sidebar', () => {
+  const block = /const CORE_NAVIGATION: NavGroup\[\] = \[([\s\S]*?)\n\]/.exec(shell)
+  assert.ok(block, 'CORE_NAVIGATION must be a literal array')
+  assert.equal(block[1].includes("id: 'feedback'"), false, 'feedback must not be in the core sidebar')
+  assert.match(shell, /export const FEEDBACK_ENABLED = false/)
+  assert.match(shell, /FEEDBACK_ENABLED\s*\?\s*\[\{ id: 'feedback'/) // page stays behind the switch
+  assert.match(app, /page === 'feedback' && FEEDBACK_ENABLED/) // route cannot outlive the entry
+})
+
 console.log(`\nok ${checks}/${checks} navigation invariants hold`)

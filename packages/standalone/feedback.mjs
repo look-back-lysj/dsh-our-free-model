@@ -11,7 +11,10 @@
  * 一份实现 —— 共用会让"改反馈服务器"变成"可能弄坏付费通道"。
  */
 
-const DEFAULT_BASE = 'https://ourfreemodel.beichenapi.com/feedback'
+// 新网关没有反馈收集器，旧域名已停用。保留显式 `settings.feedbackUrl`
+// 给自建收集器用，但绝不回退旧域名：否则每次提交都只会得到一个误导性的
+// 网络错误，而不是“服务已关闭”。
+const DEFAULT_BASE = ''
 const MAX_TITLE = 120
 const MAX_DETAIL = 8000
 const KINDS = new Set(['bug', 'wish'])
@@ -29,6 +32,7 @@ const fail = (statusCode, message) => Object.assign(new Error(message), { status
 function baseOf(settings) {
   const raw = typeof settings()?.feedbackUrl === 'string' ? settings().feedbackUrl.trim() : ''
   const value = raw || DEFAULT_BASE
+  if (value === '') throw fail(503, '反馈服务已关闭；如需自建收集器，请在设置中填写 feedbackUrl')
   let parsed
   try { parsed = new URL(value) } catch { throw fail(400, '反馈服务器地址无效') }
   const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname)
