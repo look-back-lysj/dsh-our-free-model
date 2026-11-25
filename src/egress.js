@@ -997,8 +997,12 @@ export async function openTunnel(upstream, outlet, onSocket, { ca } = {}) {
   return await withTimeout(new Promise((resolve, reject) => {
     const secured = tls.connect({
       socket,
-      // An IP literal has no name to assert; the lane's hosts are names.
-      servername: net.isIP(host) === 0 ? host : undefined,
+      // `servername` is SNI, which an IP literal must not send. It is also the
+      // default identity Node verifies; for an IP target the `host` option
+      // supplies that identity so the certificate's IP SAN is checked. Without
+      // one of the two, Node compares against an empty DNS name and every
+      // IP-only certificate fails.
+      ...(net.isIP(host) === 0 ? { servername: host } : { host }),
       ALPNProtocols: ['http/1.1'],
       ...(ca === undefined ? {} : { ca }),
     })
@@ -1027,7 +1031,12 @@ async function httpConnect(proxy, targetHost, targetPort, onSocket) {
   try {
     if (proxy.protocol === 'https:') {
       socket = await withTimeout(new Promise((resolve, reject) => {
-        const secured = tls.connect({ socket, servername: net.isIP(proxy.hostname) === 0 ? proxy.hostname : undefined })
+        const secured = tls.connect({
+          socket,
+          // Same identity rule as the target handshake: SNI only for names,
+          // `host` only for an IP proxy so its IP SAN is still verified.
+          ...(net.isIP(proxy.hostname) === 0 ? { servername: proxy.hostname } : { host: proxy.hostname }),
+        })
         secured.once('secureConnect', () => resolve(secured))
         secured.once('error', error => { secured.destroy(); reject(error) })
         onSocket?.(secured)
